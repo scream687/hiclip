@@ -125,6 +125,7 @@ USERS_DIR = DATA_DIR / "users"          # users/<user id>/{creators,jobs,account
 MODELS_DIR = Path(env("HICLIP_MODELS") or DATA_DIR / "models")
 TMP_DIR = DATA_DIR / "tmp"
 FONTS_DIR = DATA_DIR / "fonts"          # caption fonts, copied from studio/fonts so every server renders the same
+SFX_DIR = DATA_DIR / "sfx"              # cached meme sounds and sound effects from MyInstants
 # YouTube already has a word-by-word transcript of most videos. With this on, that is what the AI reads to find the
 # clips (seconds instead of transcribing hours), and our own model is run only on the clips themselves.
 YT_TRANSCRIPT = env("HICLIP_YT_TRANSCRIPT", "1") != "0"
@@ -146,7 +147,7 @@ STATIC_MIN_SECONDS = float(env("HICLIP_STATIC_MIN_SECONDS", "6"))
 # recording carries on, so a slow answer costs a check, not the stream.
 LIVE_AI_TIMEOUT = float(env("HICLIP_LIVE_AI_TIMEOUT", "45"))
 
-for d in (USERS_DIR, MODELS_DIR, TMP_DIR, FONTS_DIR):
+for d in (USERS_DIR, MODELS_DIR, TMP_DIR, FONTS_DIR, SFX_DIR):
     d.mkdir(parents=True, exist_ok=True)
 
 

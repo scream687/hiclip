@@ -211,6 +211,8 @@ img.avatar.ring{background:transparent}
 .btn.icon{width:32px;padding:0}
 .btn.lg{height:44px;padding:0 20px;font-size:15px}
 .btn:disabled{opacity:.45;cursor:default;pointer-events:none}
+.sfx-play-btn.playing{background:var(--brand)!important;color:var(--brand-ink)!important;animation:sfxpulse 1s infinite}
+@keyframes sfxpulse{0%{transform:scale(1)}50%{transform:scale(1.15)}100%{transform:scale(1)}}
 
 /* ---------- fields */
 :where(input:not([type=checkbox],[type=radio],[type=file],[type=range]),select,textarea){width:100%;height:40px;padding:0 12px;background:#fff;border:1px solid var(--line-2);border-radius:var(--r-sm);min-width:0;outline:none;transition:border-color .15s ease}
@@ -1384,7 +1386,8 @@ function drawAdd(variant) {
       <div class="ob"><div class="ot cap-head"><span id="o_style_label">Caption style</span>
         <label><input type="checkbox" id="o_captions" data-caption-toggle ${c?.captions === false ? "" : "checked"}>Generate captions</label></div>
         ${choice("o_style", Object.entries(S.status.styles).map(([k, v]) => ({v:k, label:v, prev:capPrev(k)})), c?.style ?? "bounce", c?.captions === false)}
-        <label class="sw" style="margin-top:8px"><input type="checkbox" id="o_hinglish" ${c?.hinglish ? "checked" : ""}>English + Hinglish captions <small style="color:var(--dim)">(Mixed Roman Hindi/Urdu)</small></label></div>
+        <label class="sw" style="margin-top:8px"><input type="checkbox" id="o_hinglish" ${c?.hinglish ? "checked" : ""}>English + Hinglish captions <small style="color:var(--dim)">(Mixed Roman Hindi/Urdu)</small></label>
+        <label class="sw" style="margin-top:8px"><input type="checkbox" id="o_sfx" ${c?.sfx !== false ? "checked" : ""}>Meme sounds & SFX <small style="color:var(--dim)">(MyInstants audio effects)</small></label></div>
       <div class="ob"><div class="ot">Layout</div>${choice("o_layout", Object.entries(S.status.layouts).map(([k, v]) => ({v:k, label:LAYOUT_SHORT[k] || v, title:v, prev:`<span class="lay-prev ${esc(k)}"><span class="ph"><i></i></span></span>`})), c?.layout ?? "blur")}</div>
       <div class="ob"><div class="ot">Video quality</div><input type="hidden" id="o_quality" value="720"><div class="seg" role="group" aria-label="Video quality">
         <button type="button" data-seg="o_quality" data-v="720" aria-pressed="true">720p<small>Fast</small></button>
@@ -1777,11 +1780,13 @@ function drawSelBar() {
     if (!j || (p[0] === "c" && !j.clips.some(c => c.id === p[2]))) sel().delete(k);
   }
   const n = sel().size, dl = selClips().length, shown = $("#jobs");
+  const recs = selParts().jobsSel.filter(id => { const j = jobOf(id); return j && (j.is_live || j.live) && j.status !== "live"; }).length;
   bar.classList.toggle("on", n > 0 && !!shown);
   if (!n) return;
   put(bar, `<b>${n} selected</b>
     <button class="btn sm" data-act="selall">Select all</button>
     <button class="btn sm primary" data-act="seldl" ${dl ? "" : "disabled"}>${ic("down")}Download${dl ? ` ${dl} clip${dl === 1 ? "" : "s"}` : ""}</button>
+    ${recs ? `<button class="btn sm" data-act="selrec">${ic("scissors")}Make clips from ${recs} recording${recs === 1 ? "" : "s"}</button>` : ""}
     <button class="btn sm danger" data-act="seldel">${ic("trash")}Delete</button>
     <button class="btn sm" data-act="selclear">Cancel</button>`);
 }
@@ -2409,6 +2414,13 @@ document.addEventListener("click", async e => {
       const cid = creatorId();
       (cid ? S.jobs.filter(j => j.creator === cid) : S.jobs).forEach(j => { if (!["queued", "running", "live"].includes(j.status)) { sel().add("j:" + j.id); j.clips.forEach(c => sel().delete(`c:${j.id}:${c.id}`)); } });
       return render();
+    }
+    if (a === "selrec") {   // stopped or paused recordings: their stream pieces become normal videos to clip
+      const ids = selParts().jobsSel.filter(id => { const j = jobOf(id); return j && (j.is_live || j.live) && j.status !== "live"; });
+      let made = 0;
+      for (const id of ids) { try { await send(`/api/jobs/${id}/clip-recording`, {}); made++; } catch (e) { toast(e.message); } }
+      sel().clear(); drawSelBar();
+      return toast(made ? `Making clips from ${made} recording${made === 1 ? "" : "s"}. They show up as new videos.` : "Nothing could be clipped.", made ? "ok" : undefined);
     }
     if (a === "seldel") {
       const {jobsSel, clipsSel} = selParts();

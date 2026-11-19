@@ -108,7 +108,7 @@ _lock = threading.RLock()
 on_clip_ready: list = []   # callbacks (job, clip), run once when a clip first finishes
 
 DEFAULTS = {"max_clips": 6, "min_len": 15, "max_len": 60, "style": "bounce", "layout": "blur", "quality": 720,
-            "range_start": None, "range_end": None, "captions": True, "hinglish": False,
+            "range_start": None, "range_end": None, "captions": True, "hinglish": False, "sfx": True,
             "live_minutes": 30, "watch_live": True}
 
 
@@ -120,7 +120,7 @@ def clean_options(options) -> dict:
     """Only known settings, each inside its allowed range. Raises ValueError on nonsense."""
     out = {}
     for k, v in (options if isinstance(options, dict) else {}).items():
-        if k in ("captions", "hinglish", "watch_live"):
+        if k in ("captions", "hinglish", "sfx", "watch_live"):
             if not isinstance(v, bool):
                 raise ValueError(f"{k.capitalize()} must be on or off.")
             out[k] = v
@@ -400,6 +400,21 @@ def request_render(jid, cid, changes: dict):
             new["fixed_words"] = new_words
             new["fixed_for"] = [round(start_t, 2), round(end_t, 2), "custom"]
             new["caption_text"] = new_text
+    if "sfx" in changes:
+        raw_sfx = changes["sfx"]
+        if isinstance(raw_sfx, list):
+            clean_sfx = []
+            for s in raw_sfx:
+                if isinstance(s, dict) and s.get("url"):
+                    clean_sfx.append({
+                        "name": str(s.get("name", "Sound"))[:60],
+                        "url": str(s["url"]),
+                        "time": round(float(s.get("time", 0.0)), 2),
+                        "vol": round(max(0.05, min(2.5, float(s.get("vol", 0.7)))), 2),
+                    })
+            new["sfx"] = clean_sfx
+        elif raw_sfx is False or raw_sfx is None:
+            new["sfx"] = []
     clip.update(new, status="queued")
     save(job)
     _q.put(("clip", jid, cid))
@@ -430,10 +445,17 @@ def render_one(job, clip, words):
             clip["end"] = min(clip["end"], _source_length(job, src))
         local = dict(clip, start=clip["start"] - off, end=clip["end"] - off, hook=roman.to_roman(clip.get("hook") or ""))
         near = _caption_words(job, clip, words, off) if clip.get("captions", True) else []
+        if (job.get("options") or {}).get("sfx", True) and "sfx" not in clip:
+            try:
+                from . import sfx as sfx_mod
+                clip["sfx"] = sfx_mod.suggest_for_clip(clip, near, game=job.get("game"), title=job.get("title"))
+                local["sfx"] = clip["sfx"]
+            except Exception:  # noqa: BLE001
+                pass
         out = render.render_clip(src, d / "clips", clip["id"], local, near, job["width"], job["height"])
         clip.update(out, status="done", version=clip.get("version", 0) + 1, error=None)
         post = {k: clip.get(k) for k in ("title", "description", "hashtags", "alt_titles", "title_why", "seo_tags", "hook",
-                                          "start", "end", "score")}
+                                          "start", "end", "score", "sfx")}
         (d / "clips" / f"{clip['id']}.json").write_text(json.dumps(post, indent=1), encoding="utf-8")
         if clip["version"] == 1:
             clip.setdefault("made_at", time.time())

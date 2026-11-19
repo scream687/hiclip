@@ -281,21 +281,60 @@ def render_clip(src: Path, out_dir: Path, name: str, clip: dict, words: list, sr
     # break the filter syntax).
     work = Path(tempfile.mkdtemp(prefix="pk"))
     try:
-        return _render_in(work, src, out_dir, name, start, end, layout, fg_h, ass, face=face)
+        return _render_in(work, src, out_dir, name, start, end, layout, fg_h, ass, face=face, sfx_list=clip.get("sfx"))
     finally:
         shutil.rmtree(work, ignore_errors=True)
 
 
-def _render_in(work: Path, src: Path, out_dir: Path, name: str, start, end, layout, fg_h, ass: str, face=None) -> dict:
+def _render_in(work: Path, src: Path, out_dir: Path, name: str, start, end, layout, fg_h, ass: str, face=None, sfx_list=None) -> dict:
     global _qsv_ok
     (work / f"{name}.ass").write_text(ass, encoding="utf-8")
     (work / "f").mkdir()
     for f in config.FONTS_DIR.glob("*.ttf"):
         shutil.copyfile(f, work / "f" / f.name)
     fc = _filter(layout, fg_h, face) + f"[v0]ass={name}.ass:fontsdir=f[v]"
-    base = ["ffmpeg", "-y", "-v", "error", "-ss", f"{start:.2f}", "-t", f"{end - start:.2f}", "-i", str(src),
-            "-filter_complex", fc, "-map", "[v]", "-map", "0:a:0", "-af", "loudnorm=I=-14:TP=-1.5:LRA=11",
-            "-c:a", "aac", "-b:a", "160k", "-ar", "48000", "-movflags", "+faststart", "-pix_fmt"]
+
+    inputs = ["ffmpeg", "-y", "-v", "error", "-ss", f"{start:.2f}", "-t", f"{end - start:.2f}", "-i", str(src)]
+
+    # Fetch and stage any meme/sound effects
+    valid_sfx = []
+    if sfx_list:
+        from . import sfx as sfx_mod
+        for idx, item in enumerate(sfx_list):
+            url = item.get("url")
+            local_path = sfx_mod.ensure_cached(url, item.get("name", "")) if url else None
+            if local_path and local_path.exists():
+                dst = work / f"sfx_{len(valid_sfx)}.mp3"
+                shutil.copyfile(local_path, dst)
+                inputs.extend(["-i", f"sfx_{len(valid_sfx)}.mp3"])
+                valid_sfx.append(item)
+
+    if valid_sfx:
+        af_parts = [
+            "[0:a:0]aresample=48000,aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo[a0];"
+        ]
+        for idx, item in enumerate(valid_sfx):
+            t_ms = int(max(0.0, float(item.get("time", 0.0))) * 1000)
+            vol = max(0.05, min(2.5, float(item.get("vol", 0.7))))
+            af_parts.append(
+                f"[{idx + 1}:a]aresample=48000,aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo,"
+                f"volume={vol:.2f},adelay={t_ms}|{t_ms}[sfx{idx + 1}];"
+            )
+        mix_inputs = "[a0]" + "".join(f"[sfx{i + 1}]" for i in range(len(valid_sfx)))
+        af_parts.append(
+            f"{mix_inputs}amix=inputs={len(valid_sfx) + 1}:duration=first:dropout_transition=0,"
+            f"loudnorm=I=-14:TP=-1.5:LRA=11[aout]"
+        )
+        audio_filter = "".join(af_parts)
+        full_fc = fc + ";" + audio_filter
+        audio_maps = ["-map", "[aout]"]
+    else:
+        full_fc = fc
+        audio_maps = ["-map", "0:a:0", "-af", "loudnorm=I=-14:TP=-1.5:LRA=11"]
+
+    base = inputs + ["-filter_complex", full_fc, "-map", "[v]"] + audio_maps + [
+        "-c:a", "aac", "-b:a", "160k", "-ar", "48000", "-movflags", "+faststart", "-pix_fmt"
+    ]
     encoders = []
     if _qsv_ok is not False:
         encoders.append(("qsv", ["nv12", "-c:v", "h264_qsv", "-global_quality", "23", "-preset", "fast"]))

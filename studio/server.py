@@ -5,6 +5,8 @@ Everything under /api, /media and /oauth needs a session, except /api/auth/* and
 import hashlib
 import hmac
 import json
+import subprocess
+import uuid
 import os
 import re
 import shutil
@@ -22,7 +24,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Redirect
 from . import admin as admins
 from . import account, load
 from . import (accounts, ai, alerts, auth, config, creators, ctx, db, jobs, live, media, posting,
-               profiles, render, safe, transcribe, usage)
+               profiles, render, safe, sfx, transcribe, usage)
 
 from . import tools as _tools  # noqa: E402
 
@@ -808,6 +810,41 @@ def create_from_file(file: UploadFile = File(...), options: str = Form("{}"), cr
     return jobs.public(job)
 
 
+@app.post("/api/jobs/{jid}/clip-recording")
+def clip_recording(jid: str):
+    """A stopped or paused live recording: join the stream pieces still on disk into one video and find its clips,
+    like any uploaded video (titles, descriptions and SEO tags included)."""
+    job = _job_or_404(jid)
+    if job.get("status") == "live":
+        raise HTTPException(409, "This stream is still recording. Stop it first, or use Clip last 30s.")
+    segs = sorted(Path(job["dir"]).joinpath("buffer").glob("*.ts"), key=lambda f: f.stat().st_mtime)
+    if not segs:
+        raise HTTPException(409, "Nothing of this recording is left on disk to clip.")
+    tmp = config.TMP_DIR / f"rec-{uuid.uuid4().hex}.mp4"
+    tmp.parent.mkdir(parents=True, exist_ok=True)
+    listing = tmp.with_suffix(".txt")
+    listing.write_text("".join(f"file '{f.as_posix()}'\n" for f in segs), encoding="utf-8")
+    try:
+        r = subprocess.run(["ffmpeg", "-y", "-v", "error", "-f", "concat", "-safe", "0", "-i", str(listing), "-c", "copy",
+                            "-movflags", "+faststart", str(tmp)], capture_output=True, text=True, timeout=600)
+        if r.returncode != 0 or not tmp.is_file():
+            raise HTTPException(500, f"Could not join the recording: {r.stderr.strip()[-200:]}")
+        name = f"{job.get('title') or 'Recording'} (recording)"
+        with _create_lock:
+            _job_slots()
+            new = jobs.create({"type": "file", "path": str(tmp), "name": name}, dict(job.get("options") or {}, watch_live=False),
+                              enqueue=False, creator=job.get("creator"))
+        dest = jobs.job_dir(new["id"]) / "source.mp4"
+        shutil.move(str(tmp), dest)
+    finally:
+        tmp.unlink(missing_ok=True)
+        listing.unlink(missing_ok=True)
+    new["source"]["path"] = str(dest)
+    new.update(title=name, uploader=job.get("uploader"))
+    jobs.enqueue(new)
+    return jobs.public(new)
+
+
 # ---------------------------------------------------------------- big files, sent in pieces
 # The page cuts a large file into pieces, sends each one, and asks for them to be joined. Each piece is small enough
 # for anything standing in front of the app. Nothing is trusted from the page: the sizes are fixed when the upload
@@ -971,6 +1008,42 @@ def rerender(jid: str, cid: str, body: dict = Body(...)):
     except (ValueError, TypeError) as e:
         raise HTTPException(400, str(e))
     return jobs.public(job)
+
+
+@app.get("/api/sfx/search")
+def sfx_search(q: str = "", limit: int = 18):
+    return {"results": sfx.search(q, limit=limit)}
+
+
+@app.get("/api/sfx/trending")
+def sfx_trending(cat: str = "memes", limit: int = 24):
+    return {"results": sfx.trending(cat, limit=limit)}
+
+
+@app.get("/api/sfx/audio")
+def sfx_audio(url: str):
+    if not url.startswith("https://www.myinstants.com/") and not url.startswith("/media/sounds/"):
+        raise HTTPException(400, "Invalid sound URL")
+    full_url = "https://www.myinstants.com" + url if url.startswith("/") else url
+    path = sfx.ensure_cached(full_url)
+    if not path or not path.exists():
+        raise HTTPException(404, "Sound not found")
+    return FileResponse(path, media_type="audio/mpeg", headers={"Cache-Control": "public, max-age=86400"})
+
+
+@app.post("/api/jobs/{jid}/clips/{cid}/sfx/suggest")
+def sfx_suggest(jid: str, cid: str):
+    job = _job_or_404(jid)
+    clip = next((c for c in job["clips"] if c["id"] == cid), None)
+    if not clip:
+        raise HTTPException(404, "No such clip")
+    words = []
+    try:
+        words = json.loads((Path(job["dir"]) / "words.json").read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        pass
+    suggested = sfx.suggest_for_clip(clip, words, game=job.get("game"), title=job.get("title"))
+    return {"sfx": suggested}
 
 
 @app.delete("/api/jobs/{jid}")

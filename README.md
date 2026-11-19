@@ -206,9 +206,11 @@ License; the licence texts are in the same folder.
 
 ## When the AI hits a rate limit
 
-If the AI service in Settings fails (rate limit, no credit, down), hiclip asks the same question to the other AIs this
-computer can already use, in this order: the **Gemini CLI** (your Google login), **Claude Code** (your Claude
-subscription), the **Codex CLI** (your ChatGPT plan) and **Ollama** (a model on this machine, `ollama pull qwen2.5:7b`).
-Any that is not installed or not signed in is skipped. Each runs in an empty folder with its tools off, so text from a
-video can only ever be answered, never acted on. Change the order with `HICLIP_AI_FALLBACKS=claude,ollama`, or turn it
-off with `HICLIP_AI_FALLBACKS=`; pick the local model with `HICLIP_OLLAMA_MODEL`.
+If the AI service in Settings fails (rate limit, no credit, down), hiclip asks the same question to **Claude Code**
+(your Claude subscription, run with every tool switched off) and then **Ollama** (a model on this machine,
+`ollama pull qwen2.5:7b`). Neither can read or change anything on your computer. Change the order or turn it off with
+`HICLIP_AI_FALLBACKS` (`HICLIP_AI_FALLBACKS=` = off); pick the local model with `HICLIP_OLLAMA_MODEL`.
+
+`gemini-cli` (your Google login) and `codex` (your ChatGPT plan) can be added to the list too, but even in their safest
+modes they can read files, so a video whose words carry instructions could get a private file copied into a post.
+Add them only on a machine with nothing private on it.

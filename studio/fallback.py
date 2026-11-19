@@ -6,7 +6,7 @@ AIs this computer can already use, so clipping never stops:
   codex       Codex CLI, signed in with your ChatGPT plan
   ollama      a model running on this machine: no limits, no account (HICLIP_OLLAMA_MODEL, default qwen2.5:7b)
 
-HICLIP_AI_FALLBACKS sets the order (comma-separated); an empty value turns the chain off. A tool that is not
+HICLIP_AI_FALLBACKS sets the order (comma-separated; default claude,ollama, see ORDER); empty turns it off. A tool that is not
 installed or not signed in is skipped. The prompt carries text from other people's videos, so every tool runs in a
 new empty folder with its tools switched off (or read-only): it can only answer, never act.
 """
@@ -20,7 +20,10 @@ import httpx
 
 from . import ai
 
-ORDER = [x.strip() for x in os.environ.get("HICLIP_AI_FALLBACKS", "gemini-cli,claude,codex,ollama").split(",") if x.strip()]
+# Default: only the two that cannot touch this computer at all (Claude with every tool off, and Ollama, which has none).
+# gemini-cli and codex can still READ files in their safest modes, so a video whose words carry instructions could
+# get a private file copied into a description: add them to HICLIP_AI_FALLBACKS only if you accept that.
+ORDER = [x.strip() for x in os.environ.get("HICLIP_AI_FALLBACKS", "claude,ollama").split(",") if x.strip()]
 OLLAMA_URL = os.environ.get("HICLIP_OLLAMA_URL", "http://127.0.0.1:11434").rstrip("/")
 OLLAMA_MODEL = os.environ.get("HICLIP_OLLAMA_MODEL", "qwen2.5:7b")
 

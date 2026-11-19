@@ -206,7 +206,8 @@ License; the licence texts are in the same folder.
 
 ## When the AI hits a rate limit
 
-If the AI service in Settings fails (rate limit, no credit, down), hiclip asks the same question to **Claude Code**
+If the AI service in Settings fails (rate limit, no credit, down), hiclip asks the same question to **Groq** (free
+tier, when a key is set: `HICLIP_GROQ_KEY`, or `{"groq_key": "..."}` in `data/fallbacks.json`), then to **Claude Code**
 (your Claude subscription, run with every tool switched off) and then **Ollama** (a model on this machine,
 `ollama pull qwen2.5:7b`). Neither can read or change anything on your computer. Change the order or turn it off with
 `HICLIP_AI_FALLBACKS` (`HICLIP_AI_FALLBACKS=` = off); pick the local model with `HICLIP_OLLAMA_MODEL`.

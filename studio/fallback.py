@@ -23,7 +23,19 @@ from . import ai
 # Default: only the two that cannot touch this computer at all (Claude with every tool off, and Ollama, which has none).
 # gemini-cli and codex can still READ files in their safest modes, so a video whose words carry instructions could
 # get a private file copied into a description: add them to HICLIP_AI_FALLBACKS only if you accept that.
-ORDER = [x.strip() for x in os.environ.get("HICLIP_AI_FALLBACKS", "claude,ollama").split(",") if x.strip()]
+ORDER = [x.strip() for x in os.environ.get("HICLIP_AI_FALLBACKS", "groq,claude,ollama").split(",") if x.strip()]
+GROQ_MODEL = os.environ.get("HICLIP_GROQ_MODEL", "openai/gpt-oss-120b")
+
+
+def _groq_key() -> str:
+    """HICLIP_GROQ_KEY, or "groq_key" in <data>/fallbacks.json (kept out of git, readable only by you)."""
+    if os.environ.get("HICLIP_GROQ_KEY"):
+        return os.environ["HICLIP_GROQ_KEY"]
+    from . import config
+    try:
+        return json.loads((config.DATA_DIR / "fallbacks.json").read_text(encoding="utf-8")).get("groq_key", "")
+    except (OSError, ValueError):
+        return ""
 OLLAMA_URL = os.environ.get("HICLIP_OLLAMA_URL", "http://127.0.0.1:11434").rstrip("/")
 OLLAMA_MODEL = os.environ.get("HICLIP_OLLAMA_MODEL", "qwen2.5:7b")
 
@@ -59,6 +71,16 @@ def _codex(text, timeout):
                  "-o", "answer.txt", "-"], text, timeout, out_file="answer.txt")
 
 
+def _groq(text, timeout):
+    """Groq's free tier: an ordinary web API (no tools, no files), so it is safe first in line."""
+    r = httpx.post("https://api.groq.com/openai/v1/chat/completions", timeout=timeout,
+                   headers={"Authorization": f"Bearer {_groq_key()}"},
+                   json={"model": GROQ_MODEL, "messages": [{"role": "user", "content": text}], "temperature": 0.4})
+    if r.status_code != 200:
+        raise RuntimeError(f"Groq HTTP {r.status_code}: {r.text[:160]}")
+    return r.json()["choices"][0]["message"]["content"]
+
+
 def _ollama(text, timeout):
     r = httpx.post(f"{OLLAMA_URL}/api/chat", timeout=timeout, json={
         "model": OLLAMA_MODEL, "stream": False, "format": "json", "messages": [{"role": "user", "content": text}]})
@@ -67,12 +89,16 @@ def _ollama(text, timeout):
     return r.json()["message"]["content"]
 
 
-TOOLS = {"gemini-cli": ("gemini", _gemini_cli), "claude": ("claude", _claude), "codex": ("codex", _codex),
+TOOLS = {"groq": ("", _groq), "gemini-cli": ("gemini", _gemini_cli), "claude": ("claude", _claude), "codex": ("codex", _codex),
          "ollama": (None, _ollama)}
 
 
 def available() -> list:
-    return [n for n in ORDER if n in TOOLS and (TOOLS[n][0] is None or shutil.which(TOOLS[n][0]))]
+    def ready(n):
+        if n == "groq":
+            return bool(_groq_key())
+        return TOOLS[n][0] is None or bool(shutil.which(TOOLS[n][0]))
+    return [n for n in ORDER if n in TOOLS and ready(n)]
 
 
 def ask(prompt: str, schema: dict, timeout: float | None = None):

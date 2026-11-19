@@ -376,66 +376,56 @@ class Session:
             self.stop_flag.wait(5)
 
     def _yt_chat(self, video_id):
-        import urllib.request
-        continuation = None
-        api_key = None
-        chat_url = f"https://www.youtube.com/live_chat?v={video_id}"
-        req = urllib.request.Request(chat_url, headers={"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"})
+        """YouTube live chat through yt-dlp (YouTube refuses plain requests for the chat page): yt-dlp writes each
+        message to a file as it arrives, and every new line is counted the moment it lands."""
+        import subprocess
+        import sys
+        out = Path(self.job["dir"]) / "chat"
+        out.mkdir(parents=True, exist_ok=True)
+        for f in out.glob("*.live_chat.json*"):
+            f.unlink(missing_ok=True)
+        proc = subprocess.Popen([sys.executable, "-m", "yt_dlp", "--quiet", "--no-warnings", "--skip-download",
+                                 "--write-subs", "--sub-langs", "live_chat", "-o", str(out / "chat.%(ext)s"),
+                                 f"https://www.youtube.com/watch?v={video_id}"],
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        pos, path = 0, None
         try:
-            with urllib.request.urlopen(req, timeout=15) as resp:
-                html = resp.read().decode("utf-8", "replace")
-            m_cont = re.search(r'"continuation":"([^"]+)"', html)
-            m_key = re.search(r'"INNERTUBE_API_KEY":"([^"]+)"', html)
-            if m_cont and m_key:
-                continuation = m_cont.group(1)
-                api_key = m_key.group(1)
-        except Exception:
-            pass
-        if not continuation or not api_key:
-            return
-        self.chat_on = True
-        post_url = f"https://www.youtube.com/youtubei/v1/live_chat/get_live_chat?key={api_key}"
-        while not self.stop_flag.is_set() and not self.ended:
-            try:
-                payload = json.dumps({
-                    "context": {"client": {"clientName": "WEB", "clientVersion": "2.20240101.00.00"}},
-                    "continuation": continuation
-                }).encode("utf-8")
-                post_req = urllib.request.Request(post_url, data=payload, headers={
-                    "Content-Type": "application/json",
-                    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
-                })
-                with urllib.request.urlopen(post_req, timeout=15) as resp:
-                    data = json.loads(resp.read().decode("utf-8", "replace"))
-
-                actions = (data.get("continuationContents") or {}).get("liveChatContinuation", {}).get("actions", [])
-                second = int(self.samples / SR)
-                for act in actions:
-                    item = act.get("addChatItemAction", {}).get("item", {})
-                    msg_render = item.get("liveChatTextMessageRenderer")
-                    if msg_render:
-                        author = (msg_render.get("authorName") or {}).get("simpleText", "")
-                        with self.lock:
-                            self.chat[second] += 1
-                            self.chat_total += 1
-                            if author:
-                                self.chat_users.setdefault(second, set()).add(author.lower())
-                                self.chat_kept = _trim_names(self.chat_users, second, self.chat_kept)
-                conts = (data.get("continuationContents") or {}).get("liveChatContinuation", {}).get("continuations", [])
-                next_cont = None
-                timeout_ms = 4000
-                for c in conts:
-                    invalidation = c.get("invalidationContinuationData") or c.get("timedContinuationData")
-                    if invalidation and invalidation.get("continuation"):
-                        next_cont = invalidation.get("continuation")
-                        timeout_ms = invalidation.get("timeoutMs", 4000)
-                        break
-                if next_cont:
-                    continuation = next_cont
-                self.stop_flag.wait(max(2.0, min(10.0, timeout_ms / 1000.0)))
-            except Exception:
-                self.stop_flag.wait(6.0)
-        self.chat_on = False
+            while not self.stop_flag.is_set() and not self.ended:
+                # yt-dlp appends to chat.live_chat.json.part while the stream runs (the -FragN files come and go)
+                path = next((f for f in (out / "chat.live_chat.json.part", out / "chat.live_chat.json") if f.exists()), None)
+                if path:
+                    with open(path, "rb") as f:
+                        f.seek(pos)
+                        chunk = f.read()
+                    end = chunk.rfind(b"\n") + 1           # only whole lines; the rest is read next time
+                    pos += end
+                    second = int(self.samples / SR)
+                    for line in chunk[:end].splitlines():
+                        try:
+                            acts = json.loads(line).get("replayChatItemAction", {}).get("actions", [])
+                        except ValueError:
+                            continue
+                        for act in acts:
+                            r = act.get("addChatItemAction", {}).get("item", {}).get("liveChatTextMessageRenderer")
+                            if not r:
+                                continue
+                            text = "".join(x.get("text", "") for x in r.get("message", {}).get("runs", []))
+                            if text.strip().startswith("!"):   # bot commands (!giveaway): a raffle, not hype
+                                continue
+                            author = r.get("authorExternalChannelId") or (r.get("authorName") or {}).get("simpleText", "")
+                            with self.lock:
+                                self.chat_on = True
+                                self.chat[second] += 1
+                                self.chat_total += 1
+                                if author:
+                                    self.chat_users.setdefault(second, set()).add(author.lower())
+                                    self.chat_kept = _trim_names(self.chat_users, second, self.chat_kept)
+                if proc.poll() is not None and not path:
+                    return                                # yt-dlp could not open this stream's chat
+                self.stop_flag.wait(2.0)
+        finally:
+            proc.terminate()
+            self.chat_on = False
 
     def _chat_spike(self, s, e):
         """True if chat was at least 3x busier than usual during (and just after) these seconds.

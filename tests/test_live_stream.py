@@ -177,6 +177,18 @@ segment102.ts
             ai.call, ai.models, config.ai_ready, brain.time.sleep = saved
         self.assertEqual((model, calls), ("free", ["busy", "free"]))
 
+    def test_fallback_chain_skips_a_failing_tool_and_wraps_one_item_in_a_list(self):
+        from studio import fallback
+        saved = (fallback.TOOLS, fallback.ORDER)
+        def broken(text, timeout): raise RuntimeError("not signed in")
+        fallback.TOOLS = {"a": (None, broken), "b": (None, lambda text, timeout: '{"title": "ok"}')}
+        fallback.ORDER = ["a", "b"]
+        try:
+            out, name = fallback.ask("x", {"type": "ARRAY", "items": {"type": "OBJECT"}})
+        finally:
+            fallback.TOOLS, fallback.ORDER = saved
+        self.assertEqual((out, name), ([{"title": "ok"}], "b"))
+
     def test_publish_hinglish(self):
         job = {
             "id": "test_j2",

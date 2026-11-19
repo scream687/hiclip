@@ -203,3 +203,12 @@ post, and for following the terms of the sites you fetch from and post to.
 
 [MIT](LICENSE). Caption fonts in `studio/fonts/` (Anton, Archivo Black, Poppins) are under the SIL Open Font
 License; the licence texts are in the same folder.
+
+## When the AI hits a rate limit
+
+If the AI service in Settings fails (rate limit, no credit, down), hiclip asks the same question to the other AIs this
+computer can already use, in this order: the **Gemini CLI** (your Google login), **Claude Code** (your Claude
+subscription), the **Codex CLI** (your ChatGPT plan) and **Ollama** (a model on this machine, `ollama pull qwen2.5:7b`).
+Any that is not installed or not signed in is skipped. Each runs in an empty folder with its tools off, so text from a
+video can only ever be answered, never acted on. Change the order with `HICLIP_AI_FALLBACKS=claude,ollama`, or turn it
+off with `HICLIP_AI_FALLBACKS=`; pick the local model with `HICLIP_OLLAMA_MODEL`.

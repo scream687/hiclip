@@ -218,10 +218,10 @@ def loud_zscore(db):
 def ask_ai(prompt, schema=None, purpose="AI call", timeout=None):
     """Try each model in order, with a couple of retries for rate limits and overloads.
     Returns (the answer, the model that gave it, tokens used) and notes the tokens in the usage record."""
-    if not config.ai_ready():
-        raise RuntimeError("The AI is not set up on this server.")
+    from . import fallback
     last = None
-    order = ai.models()
+    order = ai.models() if config.ai_ready() else []   # no key: straight to the fallbacks (Claude, Codex, Ollama...)
+    spare = bool(fallback.available())
     for i, model in enumerate(order):
         for attempt in range(3):
             try:
@@ -232,12 +232,19 @@ def ask_ai(prompt, schema=None, purpose="AI call", timeout=None):
             except Exception as e:  # noqa: BLE001
                 last = e
                 busy = "HTTP 429" in str(e) or "HTTP 5" in str(e)
-                if busy and i < len(order) - 1:
+                if busy and (i < len(order) - 1 or spare):
                     break     # rate-limited or overloaded: the next model has its own quota, so it goes at once
                 if busy:
                     time.sleep(4 * (attempt + 1))
                     continue
                 break
+    try:  # the service in Settings could not answer: the same question goes to the other AIs on this computer
+        out, name = fallback.ask(prompt, schema or SCHEMA, timeout)
+        usage.record(0, 0, f"{purpose} (via {name})")
+        return out, name, 0
+    except Exception as e:  # noqa: BLE001
+        if last is None:
+            last = e
     ai.note_problem(last)
     raise RuntimeError(f"The AI did not answer: {ai.explain(last) or last}")
 

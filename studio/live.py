@@ -224,9 +224,22 @@ class Session:
         m = re.match(r"^https?://(?:www\.)?twitch\.tv/([A-Za-z0-9_]+)", self.job["source"]["url"])
         if m:
             threading.Thread(target=ctx.bind(self._chat), args=(m.group(1).lower(),), daemon=True).start()
-        yt_id = _youtube_video_id(self.job["source"].get("url") or "")
+        url = self.job["source"].get("url") or ""
+        yt_id = _youtube_video_id(url)
         if yt_id:
             threading.Thread(target=ctx.bind(self._yt_chat), args=(yt_id,), daemon=True).start()
+        elif media.is_youtube(url):   # added by channel ("@name/live"): find the stream's video id first
+            threading.Thread(target=ctx.bind(self._yt_chat_by_channel), args=(url,), daemon=True).start()
+
+    def _yt_chat_by_channel(self, url):
+        try:
+            info = resolve(url)
+        except Exception:  # noqa: BLE001 - offline or blocked: no chat, the recording goes on
+            return
+        vid = info.get("id") or info.get("display_id") or _youtube_video_id(
+            info.get("webpage_url") or info.get("original_url") or "")
+        if vid and re.fullmatch(r"[\w-]{11}", str(vid)):
+            self._yt_chat(str(vid))
 
     def stop(self, note="Stopped by you"):
         """Instant for the user: the card and the creator show as stopped straight away. Clips already being made

@@ -420,7 +420,8 @@ Pick up to {n} moments that would work as standalone clips for someone who has n
 funny moments, fails, clutch plays, rage, shock, hot takes, or a short story with a payoff.
 """
 MUST_PICK = "This time you MUST return the single best moment in this stretch, even if it is only decent."
-NOT_MUST = "Most checks should return []. Only return a moment you would stop scrolling for."
+NOT_MUST = ("Return the best moment in this stretch with an honest score (most stretches score under 60; a moment you "
+            "would stop scrolling for scores 80+). Return [] only when nobody says anything worth hearing.")
 
 FACE_CAM = """One frame of a gaming stream is attached.
 

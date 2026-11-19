@@ -24,6 +24,7 @@ from . import config
 # name -> (label shown on the pages, address, how it is spoken to, where to get a key, an example model id)
 PROVIDERS = {
     "gemini": ("Gemini", "https://generativelanguage.googleapis.com/v1beta/models", "gemini", "https://aistudio.google.com/apikey", "gemini-2.5-flash"),
+    "cloudflare": ("Cloudflare Workers AI", "https://api.cloudflare.com/client/v4/accounts/acc6fb8b9947bacf0c3d591f47eb2e6e/ai/v1", "cloudflare", "https://dash.cloudflare.com", "@cf/meta/llama-3.3-70b-instruct-fp8-fast"),
     "openai": ("OpenAI", "https://api.openai.com/v1", "openai", "https://platform.openai.com/api-keys", "gpt-4o-mini"),
     "xai": ("Grok", "https://api.x.ai/v1", "openai", "https://console.x.ai", "grok-4"),
     "groq": ("Groq", "https://api.groq.com/openai/v1", "openai", "https://console.groq.com/keys", "llama-3.3-70b-versatile"),
@@ -32,7 +33,7 @@ PROVIDERS = {
     "ollama": ("Ollama (on this machine)", "http://127.0.0.1:11434/v1", "openai", "https://ollama.com", "llama3.1"),
     "custom": ("Custom (OpenAI-compatible)", "", "openai", "", ""),
 }
-ALIASES = {"google": "gemini", "grok": "xai", "claude": "anthropic", "local": "ollama"}
+ALIASES = {"google": "gemini", "grok": "xai", "claude": "anthropic", "local": "ollama", "cf": "cloudflare", "workers-ai": "cloudflare", "workers": "cloudflare"}
 NO_KEY = {"ollama", "custom"}       # a model running on your own machine needs no key
 
 # ---------------------------------------------------------------- the settings in use
@@ -157,6 +158,11 @@ def list_models(provider_id=None, address=None, with_key=None) -> list:
         r = httpx.get(base, params={"pageSize": 200}, headers={"x-goog-api-key": k}, timeout=20)
     elif how == "anthropic":
         r = httpx.get(f"{base}/models", params={"limit": 200}, headers={"x-api-key": k, "anthropic-version": "2023-06-01"}, timeout=20)
+    elif how == "cloudflare":
+        acc = re.search(r"/accounts/([^/]+)", base)
+        acc_id = acc.group(1) if acc else "acc6fb8b9947bacf0c3d591f47eb2e6e"
+        url = f"https://api.cloudflare.com/client/v4/accounts/{acc_id}/ai/models/search"
+        r = httpx.get(url, params={"task": "Text Generation"}, headers={"Authorization": f"Bearer {k}"} if k else {}, timeout=20)
     else:
         r = httpx.get(f"{base}/models", headers={"Authorization": f"Bearer {k}"} if k else {}, timeout=20)
     if r.status_code != 200:
@@ -165,6 +171,8 @@ def list_models(provider_id=None, address=None, with_key=None) -> list:
     if how == "gemini":
         found = [m.get("name", "").split("/")[-1] for m in data.get("models", [])
                  if "generateContent" in (m.get("supportedGenerationMethods") or [])]
+    elif how == "cloudflare":
+        found = [m.get("name", "") for m in data.get("result", []) if isinstance(m, dict)]
     else:
         found = [m.get("id", "") for m in data.get("data", []) if isinstance(m, dict)]
     return sorted({m for m in found if m})[:400]
@@ -298,7 +306,7 @@ def call(model: str, prompt: str, schema: dict, timeout: float | None = None):
     `timeout` is how long one answer may take. A live stream passes a short one, because a slow
     answer must not stop the recording."""
     how = PROVIDERS[provider()][2]
-    return {"gemini": _gemini, "openai": _openai, "anthropic": _anthropic}[how](model, prompt, schema, timeout)
+    return {"gemini": _gemini, "openai": _openai, "anthropic": _anthropic, "cloudflare": _openai}[how](model, prompt, schema, timeout)
 
 
 def see(prompt: str, image: bytes, timeout: float | None = None) -> tuple[str, int, int]:

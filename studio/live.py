@@ -232,8 +232,10 @@ class Session:
             threading.Thread(target=ctx.bind(self._yt_chat_by_channel), args=(url,), daemon=True).start()
 
     def _yt_chat_by_channel(self, url):
-        try:
-            info = resolve(url)
+        import yt_dlp
+        try:   # just the page's metadata (no formats, no download): the live video's own id
+            with yt_dlp.YoutubeDL({"quiet": True, "no_warnings": True, "skip_download": True, "logger": _Quiet()}) as y:
+                info = y.extract_info(url, download=False, process=False) or {}
         except Exception:  # noqa: BLE001 - offline or blocked: no chat, the recording goes on
             return
         vid = info.get("id") or info.get("display_id") or _youtube_video_id(

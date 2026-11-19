@@ -101,17 +101,25 @@ def available() -> list:
     return [n for n in ORDER if n in TOOLS and ready(n)]
 
 
-def ask(prompt: str, schema: dict, timeout: float | None = None):
-    """(answer, name of the tool that gave it). Raises with every tool's reason when none could answer."""
+def ask(prompt: str, schema: dict, timeout: float | None = None, retry_empty: bool = False):
+    """(answer, name of the tool that gave it). Raises with every tool's reason when none could answer.
+    retry_empty: an empty list is passed on to the next tool (a whole video with "nothing worth clipping" is
+    more often a strict model than a dull video; a live check's empty answer is usually just a quiet minute)."""
+    empty = None
     text, why = _full(prompt, schema), []
     for name in available():
         try:
             out = ai._parse(TOOLS[name][1](text, max(timeout or 0, 120)))
             if isinstance(out, dict) and schema.get("type") == "ARRAY":   # one item where a list was asked for
                 out = next((v for v in out.values() if isinstance(v, list)), [out])
+            if retry_empty and out == []:
+                empty = empty or (out, name)
+                continue
             if out is not None:
                 return out, name
             why.append(f"{name}: no JSON in the answer")
         except Exception as e:  # noqa: BLE001 - not signed in, rate-limited too, timed out: try the next one
             why.append(f"{name}: {str(e)[-120:]}")
+    if empty:
+        return empty
     raise RuntimeError("; ".join(why) or "no fallback AI is installed")

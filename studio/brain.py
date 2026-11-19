@@ -239,7 +239,7 @@ def ask_ai(prompt, schema=None, purpose="AI call", timeout=None):
                     continue
                 break
     try:  # the service in Settings could not answer: the same question goes to the other AIs on this computer
-        out, name = fallback.ask(prompt, schema or SCHEMA, timeout)
+        out, name = fallback.ask(prompt, schema or SCHEMA, timeout, retry_empty=purpose.startswith("Video"))
         usage.record(0, 0, f"{purpose} (via {name})")
         return out, name, 0
     except Exception as e:  # noqa: BLE001

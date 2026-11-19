@@ -11,7 +11,7 @@ import traceback
 import uuid
 from pathlib import Path
 
-from . import brain, config, creators, ctx, facecam, games, load, media, quality, render, roman, safe, transcribe, usage
+from . import brain, config, creators, ctx, facecam, games, load, media, quality, render, roman, safe, sfx, transcribe, usage
 
 class _FairQueue:
     """Whose video is next. Each person has their own line and the lines take turns, so someone who adds ten
@@ -405,7 +405,7 @@ def request_render(jid, cid, changes: dict):
         if isinstance(raw_sfx, list):
             clean_sfx = []
             for s in raw_sfx:
-                if isinstance(s, dict) and s.get("url"):
+                if isinstance(s, dict) and s.get("url") and sfx.is_sound_url(s["url"]):
                     clean_sfx.append({
                         "name": str(s.get("name", "Sound"))[:60],
                         "url": str(s["url"]),

@@ -303,9 +303,20 @@ def trending(category: str = "memes", limit: int = 24) -> list:
     return results[:limit]
 
 
+def is_sound_url(url: str) -> bool:
+    p = urllib.parse.urlparse(str(url))
+    return (p.scheme == "https" and (p.hostname or "").lower().rstrip(".") == "www.myinstants.com"
+            and p.path.startswith("/media/sounds/") and ".." not in p.path)
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *a, **k):
+        return None
+
+
 def ensure_cached(url: str, filename_hint: str = "") -> Path | None:
     """Downloads and caches an MP3 from MyInstants into config.SFX_DIR. Returns the local Path."""
-    if not url:
+    if not url or not is_sound_url(url):   # only MyInstants sound files: a stored URL is never a door to other hosts
         return None
     config.SFX_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -325,7 +336,7 @@ def ensure_cached(url: str, filename_hint: str = "") -> Path | None:
     tmp_file = config.SFX_DIR / f"tmp_{url_hash}_{clean_base}"
     try:
         req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-        with urllib.request.urlopen(req, timeout=12) as resp:
+        with urllib.request.build_opener(_NoRedirect).open(req, timeout=12) as resp:
             data = resp.read()
         if len(data) < 200:
             log.warning("SFX response too small for %s (%d bytes)", url, len(data))

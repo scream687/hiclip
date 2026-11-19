@@ -1458,7 +1458,7 @@ document.addEventListener("keydown", e => {
 const targetCreator = () => creatorId() || $("#o_creator")?.value || "";
 function jobOptions() {
   const n = id => { const el = $(id); return (!el || el.value === "") ? null : Number(el.value); };
-  const o = {max_clips:n("#o_max"), min_len:n("#o_min"), max_len:n("#o_maxlen"), captions:$("#o_captions") ? $("#o_captions").checked : true, hinglish:$("#o_hinglish") ? $("#o_hinglish").checked : false, live_minutes:n("#o_live_min") ?? 30, watch_live:$("#o_watch_live") ? $("#o_watch_live").checked : true, style:$("#o_style")?.value || "bounce", layout:$("#o_layout")?.value || "blur", quality:n("#o_quality") ?? 720};
+  const o = {max_clips:n("#o_max"), min_len:n("#o_min"), max_len:n("#o_maxlen"), captions:$("#o_captions") ? $("#o_captions").checked : true, hinglish:$("#o_hinglish") ? $("#o_hinglish").checked : false, sfx:$("#o_sfx") ? $("#o_sfx").checked : true, live_minutes:n("#o_live_min") ?? 30, watch_live:$("#o_watch_live") ? $("#o_watch_live").checked : true, style:$("#o_style")?.value || "bounce", layout:$("#o_layout")?.value || "blur", quality:n("#o_quality") ?? 720};
   if (n("#o_from") !== null) o.range_start = n("#o_from") * 60;
   if (n("#o_to") !== null) o.range_end = n("#o_to") * 60;
   return o;
@@ -1875,6 +1875,7 @@ function drawCreatorForm() {
     <div class="card"><h2>Clips</h2><p class="help">How this creator's clips look.</p>
       <div class="fields"><label class="sw span"><input type="checkbox" data-k="captions" data-caption-toggle ${c.captions === false ? "" : "checked"}>Generate captions</label>
         <label class="sw span"><input type="checkbox" data-k="hinglish" ${c.hinglish ? "checked" : ""}>English + Hinglish captions (Mixed Roman script for Hindi/Urdu)</label>
+        <label class="sw span"><input type="checkbox" data-k="sfx" ${c.sfx !== false ? "checked" : ""}>Meme sounds & SFX (MyInstants audio effects)</label>
         <label class="f">Caption style<select data-k="style" data-caption-style ${c.captions === false ? "disabled" : ""}>${opts(S.status.styles, c.style)}</select></label>
         <label class="f">Layout<select data-k="layout">${opts(S.status.layouts, c.layout)}</select></label>
         <label class="f">Game<input data-k="game" value="${esc(c.game || "")}" placeholder="Read from the title"><small class="sub" style="font-weight:400">Left empty, the game is read from the stream's title. Set it for a streamer whose title says nothing: GTA 6, Fortnite, Elden Ring.</small></label>

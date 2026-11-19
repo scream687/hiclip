@@ -1253,6 +1253,7 @@ function drawShell() {  const nav = (v, icon, label, extra = "") => `<button cla
   put($("#nav"), nav("overview", navIc("home", "overview"), "Home") +
     nav("library", navIc("film", "library"), "All videos", (() => { const w = S.jobs.filter(j => ["queued", "running"].includes(j.status)).length;
       return w ? `<span class="working" title="${w} working now"><i></i>${w} working</span>` : S.jobs.length ? `<span class="count">${S.jobs.length}</span>` : ""; })()) +
+    (S.status.user?.is_admin ? nav("gta6", navIc("play", "gta6"), "GTA 6 Shorts", "") : "") +
     `<h4><span>Creators</span></h4>` +
     S.creators.map(c => nav("c:" + c.id, cav(c), c.name,
       c.live_job ? `<span class="sb-tag rec" title="Recording now"><i></i>Rec</span>`
@@ -1268,7 +1269,8 @@ function drawShell() {  const nav = (v, icon, label, extra = "") => `<button cla
       <button class="icon-btn bell" data-act="bell" title="Notifications" aria-label="Notifications${S.status.unread ? `, ${S.status.unread} new` : ""}" aria-haspopup="dialog">${ic("bell")}${S.status.unread ? `<span class="dotn">${S.status.unread > 9 ? "9+" : S.status.unread}</span>` : ""}</button></div>` : ""));
   const c = creator();
   const recording = S.creators.filter(x => x.live_job).length;
-  let title = {overview:"Home", library:"All videos", settings:"Settings", usage:"AI usage"}[S.view] || "", sub = "", act = "";
+  let title = {overview:"Home", library:"All videos", settings:"Settings", usage:"AI usage", gta6:"GTA 6 Shorts"}[S.view] || "", sub = "", act = "";
+  if (S.view === "gta6") sub = "New GTA 6 videos, picked and rendered into Shorts by the gta6-clipper skill on this computer.";
   if (S.view === "usage") sub = "What the AI has been used for.";
   if (S.view === "overview") sub = `${greeting()}. ${S.creators.length} creator${S.creators.length === 1 ? "" : "s"}${recording ? `, ${recording} recording now` : ""}.`;
   if (S.view === "library") sub = "Every video and recording, across all creators.";
@@ -1306,7 +1308,7 @@ function drawShell() {  const nav = (v, icon, label, extra = "") => `<button cla
   put($("#title"), `<span>${esc(title)}</span>`); put($("#subtitle"), subHtml ?? esc(sub)); put($("#actions"), act);
 }
 
-const ROUTES = {overview: "", library: "videos", settings: "settings", usage: "usage"};
+const ROUTES = {overview: "", library: "videos", settings: "settings", usage: "usage", gta6: "gta6"};
 function pathFor(v, tab) {
   if (v.startsWith("c:")) return `/app/creators/${encodeURIComponent(v.slice(2))}${tab && tab !== "clips" ? "/" + tab : ""}`;
   if (v === "settings") return "/app/settings" + (tab ? "/" + tab : "");
@@ -1340,6 +1342,7 @@ function go(v, tab, fromHistory) {
   else if (v === "library") view.innerHTML = `<div id="live"></div><div id="add"></div><div id="jobs"></div>`;
   else if (v === "settings") view.innerHTML = `<div id="sform"></div>`;
   else if (v === "usage") { view.innerHTML = `<div id="usage"></div>`; loadUsage(); }
+  else if (v === "gta6") { view.innerHTML = `<div id="gta6"></div>`; loadGta6(); }
   else view.innerHTML = `<div id="stream"></div><div id="cbody"></div>`;   // the live player stays put across tabs: no restart, no rebuffer
   if ($("#add")) drawAdd(v === "overview" ? "hero" : "compact");
   if (v === "overview" && window.GradientASCII) { try { window._gaStop = GradientASCII($("#appAscii"), {colors: ["#ffb27a", "#ffffff", "#ffd2ae", "#ffe0c2", "#fff1e6"], shape: "horizon", lightMode: true, cellSize: 16, density: 0.8, glyphOpacity: 0.26, gradientOpacity: 0.32, glow: 0.06, grain: 0.06, mouseInteraction: false, clickEffect: "none"}); } catch {} }
@@ -1962,6 +1965,32 @@ function drawOverview() {
 }
 
 /* ============================================================ AI usage */
+/* GTA 6 auto-run: the gta6-clipper skill does the work; this page starts it, follows its log and shows its Shorts. */
+let gta6Timer = null;
+async function loadGta6() {
+  clearTimeout(gta6Timer);
+  try { S.gta6 = await api("/api/gta6"); } catch (e) { S.gta6 = {error: e.message}; }
+  drawGta6();
+  if (S.gta6?.running && S.view === "gta6") gta6Timer = setTimeout(loadGta6, 3000);
+}
+function drawGta6() {
+  const k = S.gta6, box = $("#gta6"); if (!k || !box) return;
+  if (k.available === false) { box.innerHTML = `<div class="note">${ic("warn")}<span>The gta6-clipper skill isn't installed at <code>${esc(k.skill)}</code> (with its .venv). Install it, or set HICLIP_GTA6_SKILL to its folder.</span></div>`; return; }
+  const f = n => `/api/gta6/files/${encodeURIComponent(n)}`;
+  box.innerHTML = `<div class="row" style="margin-bottom:16px">
+      <button class="btn primary" data-act="gta6run" ${k.running ? "disabled" : ""}>${ic("play")}${k.running ? "Running…" : "Make 10 GTA 6 Shorts"}</button>
+      <label class="f" style="margin:0">Videos to check<input id="gta6videos" type="number" min="1" max="20" value="5" style="width:80px"></label>
+      <span class="sub">${esc(k.step || "")}${k.error ? ` · ${esc(k.error)}` : ""}</span></div>
+    ${(k.log || []).length ? `<details ${k.running ? "open" : ""}><summary>Log</summary><pre style="white-space:pre-wrap;max-height:260px;overflow:auto;font-size:12px">${esc(k.log.join("\n"))}</pre></details>` : ""}
+    <div class="grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:16px;margin-top:16px">
+      ${(k.shorts || []).map(c => `<div class="card" style="padding:10px">
+        <video src="${f(c.name)}" ${c.cover ? `poster="${f(c.cover)}"` : ""} controls preload="none" style="width:100%;aspect-ratio:9/16;border-radius:10px;background:#000"></video>
+        <pre style="white-space:pre-wrap;font-size:12px;margin:8px 0">${esc(c.text)}</pre>
+        <div class="row"><a class="btn sm" href="${f(c.name)}" download>${ic("down")}Download</a><button class="btn sm" data-act="copytext" data-t="${esc(c.text)}">${ic("copy")}Copy text</button></div></div>`).join("")
+        || `<p class="sub">No Shorts yet. Press the button: it finds new GTA 6 videos, picks the best moments and renders them (10+ minutes).</p>`}
+    </div>`;
+}
+
 async function loadUsage() {
   try { S.usage = await api("/api/usage"); } catch { return; }
   S.status.ai = {...S.status.ai, ready: S.usage.ready, provider: S.usage.provider, model: S.usage.model, today_calls: S.usage.today_calls, today_tokens: S.usage.today_tokens};
@@ -2353,6 +2382,10 @@ document.addEventListener("click", async e => {
       const c = jobOf(d.j).clips.find(x => x.id === d.c);
       const tags = [...(c.hashtags || []), ...((c.hashtags || []).some(h => h.toLowerCase() === "shorts") ? [] : ["Shorts"])].map(h => "#" + h).join(" ");
       await navigator.clipboard.writeText(`${c.title}\n\n${c.description}\n\n${tags}`); return toast("Post text copied", "ok");
+    }
+    if (a === "gta6run") {
+      try { await send("/api/gta6/run", {videos: Number($("#gta6videos")?.value) || 5, shorts: 10}); } catch (e) { return toast(e.message); }
+      return loadGta6();
     }
     if (a === "usetitle") {
       const t = $("#clipdlg [data-f=title]"); if (t) { t.value = d.t; t.focus(); }

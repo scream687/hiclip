@@ -569,6 +569,36 @@ def google_callback(request: Request, code: str = "", state: str = "", error: st
 
 
 # ================================================================ app status
+# ---------------------------------------------------------------- GTA 6 auto-run (the gta6-clipper skill, when installed)
+@app.get("/api/gta6")
+def gta6_status(request: Request):
+    _admin(request)  # it runs programs on this computer: the owner only
+    from . import gta6
+    return gta6.status()
+
+
+@app.post("/api/gta6/run")
+def gta6_run(request: Request, body: dict = Body(default={})):
+    _admin(request)
+    from . import gta6
+    try:
+        return gta6.start(int(body.get("videos") or 5), int(body.get("shorts") or 10))
+    except (ValueError, TypeError):
+        raise HTTPException(400, "Videos and Shorts must be numbers.")
+    except RuntimeError as e:
+        raise HTTPException(409, str(e))
+
+
+@app.get("/api/gta6/files/{name}")
+def gta6_file(name: str, request: Request):
+    _admin(request)
+    from . import gta6
+    try:
+        return FileResponse(gta6.file(name))
+    except FileNotFoundError:
+        raise HTTPException(404)
+
+
 @app.get("/api/status")
 def status(request: Request):
     from . import notices

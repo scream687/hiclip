@@ -258,7 +258,7 @@ class Session:
                 fails += 1
                 if self.samples == 0 or fails >= 3:
                     if self.samples == 0:
-                        self.job["error"] = f"Could not start recording: {e}"
+                        self.job["error"] = f"Could not start recording: {media_safe(e)}"
                     break
                 self.stop_flag.wait(10)
                 continue

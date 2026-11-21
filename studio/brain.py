@@ -535,7 +535,7 @@ def judge_signals(z, chat, start, now, unit="messages", timeout=None):
     if len(rows) < 5:
         return [], 0
     avg = (sum(chat) / max(1, len(chat)) * 2) if has_chat else 0
-    word = "people talking" if unit == "people" else "chat messages"
+    word = {"people": "people talking", "hype": "hype messages in chat (W, GG, LET'S GO, 🔥...)"}.get(unit, "chat messages")
     prompt = SIGNAL_JUDGE.format(
         chat_note=f"\nC={word} in that slice (usual is about {avg:.1f})." if has_chat else
         "\nChat is not available for this stream.",

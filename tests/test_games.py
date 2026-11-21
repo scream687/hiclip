@@ -64,12 +64,30 @@ check("a live stream with no game in it says so", _session("morning everyone")._
 check("'rust' is not read as the game Rust", games.detect("Rust removal and restoration")[0], None)
 check("'the finals' is not read as a game", games.detect("The finals of the world cup")[0], None)
 
-# ---- the people in chat are read under the lock, as a copy
+# ---- chat hype is genuine hype, and one person spamming it is not a crowd
+from studio.live import hype_label
+check("W in chat is hype", hype_label("WWWW"), "W")
+check("a question in chat is not hype", hype_label("what game is this"), None)
+check("'no way out' is not NO WAY", hype_label("IT'S DONE NO WAY OUT"), None)
 s = _session("morning everyone")
-s.chat_users[5] = {"someone"}
-people = s.chat_people()
-people[5].add("not really there")
-check("the people in chat are a copy", s.chat_users[5], {"someone"})
+for _ in range(5):
+    s._count_hype(5, "W", "spammer")
+s._count_hype(5, "GG", "someone else")
+check("one person spamming W counts once a second", s.hype[5], 2)
+
+def _busy_chat(hyped: bool):
+    """Three minutes of steady chat, then 10 s where chat triples: hype, or just people backseating."""
+    s = _session("morning everyone")
+    s.db = [-30.0] * 200                               # loudness stays the same throughout
+    s.chat_on = True
+    for t in range(200):
+        for i in range(4 if t < 190 else 12):
+            s.chat[t] += 1
+            s._count_hype(t, ("LETS GOOO" if hyped and t >= 190 else "W" if i == 0 else "reload the game"), f"p{i}")
+    s._watch_spikes()
+    return s.spike
+check("a burst of backseating does not clip", _busy_chat(False), None)
+check("a burst of real hype is sent to the AI", (_busy_chat(True) or {}).get("why", ""), lambda w: "chat hype" in w)
 
 # ---- a slow AI answer must not stop the recording
 import time as _time

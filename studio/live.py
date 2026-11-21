@@ -31,6 +31,25 @@ CHAT_KEEP = 600       # seconds of chat names kept: only the last few minutes ar
 SR = 16000
 
 
+# Genuine hype: what a crowd types when something happens. Each message counts once, under the first label that
+# matches. Plain chatter, questions and bot commands are chat, not hype.
+HYPE_WORDS = [(label, re.compile(rx, re.I)) for label, rx in [
+    ("W", r"(?<![\w'/])w+(?![\w'/])"), ("GG", r"\bg+gs?\b"), ("LET'S GO", r"\blet'?s+\s*go+\b|\blfg+\b"),
+    ("NO WAY", r"\bno+\s*wa+y+\b(?!\s+out)"), ("OMG", r"\bomg+\b|\boh my god\b"), ("SHEESH", r"\bshe+sh\b"),
+    ("POG", r"\bpog\w*\b"), ("CLIP IT", r"\bclip\s*(it|that)\b"), ("HOLY", r"\bholy\b"), ("I WAS HERE", r"\bi\s*was\s*here\b"),
+    ("OHHH", r"\bo+h{3,}\b|\bo{3,}h*\b|\bou+\b"), ("NOOO", r"\bno{3,}\b"), ("RIP", r"\brip\b"),
+    ("L", r"(?<![\w'/])l+(?![\w'/])"),
+    ("LMAO", r"\blma+o+\b|\blo+l+\b|\bkekw\b|\blul\b|\bicant\b"), ("🔥", r"🔥"), ("😂", r"😂|🤣"),
+    ("💀", r"💀|☠|🥀"), ("😭", r"😭"), ("😱", r"😱|😮|🤯")]]
+
+
+def hype_label(text: str) -> str | None:
+    """The hype this chat message shows, or None for ordinary chat."""
+    if text.strip().startswith("!"):
+        return None
+    return next((label for label, rx in HYPE_WORDS if rx.search(text)), None)
+
+
 class NotLive(Exception):
     pass
 
@@ -136,10 +155,12 @@ class Session:
         self.csv_seen = {}
         self.part = 0
         self.chat = collections.Counter()   # second -> messages
-        self.chat_users = {}                 # second -> the people who talked, when it can be told
-        self.chat_kept = 0                   # the second this was last pruned at
         self.chat_total = 0
         self.chat_on = False
+        self.hype = collections.Counter()    # second -> hype messages (W, GG, LET'S GO, 🔥...)
+        self.hype_said = collections.deque(maxlen=20000)   # (second, label), for the words chat is hyping with
+        self.hype_users = {}                 # second -> who hyped then: one person spamming W counts once
+        self.hype_kept = 0
         self.last_check = 0.0
         self.words_at_check = 0
         self.checks = 0
@@ -359,12 +380,11 @@ class Session:
                                 second = int(self.samples / SR)
                                 self.chat[second] += 1
                                 self.chat_total += 1
-                                # how many different people, not how many messages: a wave of the same
-                                # emotes is not a crowd getting excited
-                                who = _NICK.findall(line.decode("utf-8", "replace"))
-                                if who:
-                                    self.chat_users.setdefault(second, set()).add(who[0].lower())
-                                    self.chat_kept = _trim_names(self.chat_users, second, self.chat_kept)
+                                # hype is counted once per person a second: one person spamming is not a crowd
+                                raw = line.decode("utf-8", "replace")
+                                who = _NICK.findall(raw)
+                                self._count_hype(second, raw.split(" PRIVMSG #", 1)[1].partition(" :")[2],
+                                                 who[0].lower() if who else "")
                 s.close()
             except Exception:  # noqa: BLE001
                 pass
@@ -405,7 +425,8 @@ class Session:
                             r = act.get("addChatItemAction", {}).get("item", {}).get("liveChatTextMessageRenderer")
                             if not r:
                                 continue
-                            text = "".join(x.get("text", "") for x in r.get("message", {}).get("runs", []))
+                            text = "".join(x.get("text") or ((x.get("emoji") or {}).get("emojiId") or "")
+                                           for x in r.get("message", {}).get("runs", []))
                             if text.strip().startswith("!"):   # bot commands (!giveaway): a raffle, not hype
                                 continue
                             author = r.get("authorExternalChannelId") or (r.get("authorName") or {}).get("simpleText", "")
@@ -413,42 +434,13 @@ class Session:
                                 self.chat_on = True
                                 self.chat[second] += 1
                                 self.chat_total += 1
-                                if author:
-                                    self.chat_users.setdefault(second, set()).add(author.lower())
-                                    self.chat_kept = _trim_names(self.chat_users, second, self.chat_kept)
+                                self._count_hype(second, text, author.lower() if author else "")
                 if proc.poll() is not None and not path:
                     return                                # yt-dlp could not open this stream's chat
                 self.stop_flag.wait(2.0)
         finally:
             proc.terminate()
             self.chat_on = False
-
-    def _chat_spike(self, s, e):
-        """True if chat was at least 3x busier than usual during (and just after) these seconds.
-
-        The crowd is counted as people, not messages: ten people saying "GG" is a reaction, one
-        person saying "GG" ten times is a bot."""
-        elapsed = self.samples / SR
-        if not self.chat_total or elapsed < 60:
-            return False
-        avg = self.chat_total / elapsed
-        a, b = int(s), int(e) + 6
-        rate = sum(self.chat.get(t, 0) for t in range(a, b + 1)) / (b - a + 1)
-        if rate <= max(3 * avg, 1.0):
-            return False
-        people = self.chat_people()
-        if not people:
-            return True
-        p_avg = sum(len(v) for v in people.values()) / max(1, len(people))
-        p_rate = sum(len(people.get(t, ())) for t in range(a, b + 1)) / (b - a + 1)
-        return p_rate >= max(2.0, 1.5 * p_avg)
-
-    def chat_people(self):
-        """Second -> how many different people were talking, where that is known.
-
-        A copy is taken under the lock: the chat reader thread adds to it as it goes."""
-        with self.lock:
-            return {t: set(names) for t, names in self.chat_users.items()}
 
     # ---------------------------------------------------------------- analysis
     def _transcribe_step(self):
@@ -478,6 +470,7 @@ class Session:
 
     AUTO_BEFORE, AUTO_AFTER, AUTO_GAP = 30, 20, 60   # seconds of stream sent around a jump; least time between jumps
     JUMP = 0.6                                        # 60% louder or busier than the last three minutes
+    HYPE_MIN = 0.5                                    # hype messages a second before a jump counts (30 a minute)
 
     def _watch_spikes(self):
         """Always on. Keep a running average of loudness and chat over the last three minutes (leaving out the
@@ -489,11 +482,8 @@ class Session:
                 self.base = {"warming": True}
                 return
             db = np.array(self.db[max(0, n - 190):], dtype=np.float32)
-            people = self.chat_people()
-            if people:
-                chat = [len(people.get(t, ())) for t in range(max(0, n - 190), n)]
-            else:
-                chat = [self.chat.get(t, 0) for t in range(max(0, n - 190), n)] if (self.chat_on or self.chat_total) else None
+            # genuine hype (W, GG, LET'S GO...), not message volume: backseating and questions are busy, not hype
+            chat = [self.hype.get(t, 0) for t in range(max(0, n - 190), n)] if (self.chat_on or self.chat_total) else None
         amp = 10 ** (db / 20)                       # loudness as plain level, so a percentage means something
         base, cur = float(amp[:-10].mean()), float(amp[-5:].mean())
         loud_jump = cur / max(base, 1e-6) - 1
@@ -504,9 +494,9 @@ class Session:
         chat_base = chat_now = None
         if chat is not None:
             chat_base = sum(chat[:-10]) / max(1, len(chat) - 10)
-            chat_now = sum(chat[-8:]) / 8          # chat is bursty, so look at a slightly longer stretch
-            if chat_now >= max(1.5, chat_base * (1 + pct)):
-                why.append(f"chat +{round((chat_now / max(chat_base, 0.01) - 1) * 100)}%")
+            chat_now = sum(chat[-10:]) / 10        # YouTube hands chat over every few seconds: look a little longer
+            if chat_now >= max(self.HYPE_MIN, chat_base * (1 + pct)):
+                why.append(f"chat hype +{round((chat_now / max(chat_base, 0.01) - 1) * 100)}%")
         self.base = {"loud_db": round(20 * np.log10(max(base, 1e-6)), 1), "loud_now": round(loud_jump * 100),
                      "chat": round(chat_base, 2) if chat_base is not None else None,
                      "chat_now": round(chat_now, 2) if chat_now is not None else None, "pct": round(pct * 100)}
@@ -554,13 +544,9 @@ class Session:
             return self._verdict(verdict, "Words judge: nothing clip-worthy")
         z = brain.loud_zscore(np.array(self.db, dtype=np.float32))
         lo, hi = int(ws), int(now) + 1
-        people = self.chat_people()
-        if people:
-            chat = [len(people.get(t, ())) for t in range(lo, hi)]
-            unit = "people"
-        else:
-            chat = [self.chat.get(t, 0) for t in range(lo, hi)] if (self.chat_on or self.chat_total) else None
-            unit = "messages"
+        with self.lock:
+            chat = [self.hype.get(t, 0) for t in range(lo, hi)] if (self.chat_on or self.chat_total) else None
+        unit = "hype"
         try:
             sig, tok2 = brain.judge_signals(z[lo:hi], chat, lo, now, unit=unit, timeout=config.LIVE_AI_TIMEOUT)
             self.checks += 1
@@ -743,6 +729,42 @@ class Session:
             raise ValueError("Nothing has been recorded yet.")
         self.manual.append({"start": max(0.0, end - seconds), "end": end})
 
+    HYPE_NOW = 30      # seconds of chat that count as "now": YouTube hands chat over in batches every few seconds
+    HYPE_NORMAL = 180  # the stretch before that, which counts as "normal" for this stream
+
+    def _count_hype(self, second: int, text: str, who: str = ""):
+        """Count one chat message as hype when it is, once per person per second. Called under the lock, from the
+        chat reader threads."""
+        label = hype_label(text)
+        if not label:
+            return
+        if who:
+            seen = self.hype_users.setdefault(second, set())
+            if who in seen:
+                return
+            seen.add(who)
+            self.hype_kept = _trim_names(self.hype_users, second, self.hype_kept)
+        self.hype[second] += 1
+        self.hype_said.append((second, label))
+
+    def _hype(self, sec: int) -> dict | None:
+        """Genuine hype in chat now (W, GG, LET'S GO, 🔥...) against this stream's normal, in messages a minute,
+        with the words chat is using. Called under the lock."""
+        if not (self.chat_on or self.chat_total):
+            return None
+        a = max(0, sec - self.HYPE_NOW)
+        now = sum(self.hype.get(t, 0) for t in range(a, sec)) * 60 / self.HYPE_NOW
+        said = sum(self.chat.get(t, 0) for t in range(a, sec))
+        top = collections.Counter(label for t, label in self.hype_said if t >= a).most_common(5)
+        bars = [sum(self.hype.get(t, 0) for t in range(b, b + 5)) for b in range(max(0, sec - 60), sec, 5)]
+        out = {"now": round(now), "normal": None, "x": None, "share": round(100 * now * self.HYPE_NOW / 60 / said) if said else 0,
+               "top": [[label, n] for label, n in top], "bars": bars}
+        if a >= 60:                                    # enough of the stream to know its normal
+            b = max(0, a - self.HYPE_NORMAL)
+            normal = sum(self.hype.get(t, 0) for t in range(b, a)) * 60 / (a - b)
+            out.update(normal=round(normal), x=round(now / normal, 1) if normal >= 1 else None)
+        return out
+
     def _publish(self):
         elapsed = self.samples / SR
         lines = brain.make_lines([w for w in self.words if w["s"] >= self.t_done - 45])[-5:]
@@ -754,6 +776,7 @@ class Session:
                 live={"elapsed": round(elapsed), "buffer_sec": round(self.segments[-1][2] - self.segments[0][1]) if self.segments else 0,
                       "lines": line_texts, "level": [round(x) for x in self.db[-60:]],
                       "chat": [self.chat.get(t, 0) for t in range(max(0, sec - 60), sec)] if self.chat_on or self.chat_total else None,
+                      "hype": self._hype(sec),
                       "checks": self.checks, "skipped": self.skipped, "tokens": self.tokens, "words": len(self.words),
                       "rejected": self.rejected, "verdicts": list(reversed(self.verdicts)),
                       "every_min": int(self.settings.get("ai_every_min", 3)) or 3,

@@ -443,6 +443,10 @@ def render_one(job, clip, words):
         src = Path(clip["src"]) if clip.get("src") else Path(job["source_path"])
         if not clip.get("src"):
             clip["end"] = min(clip["end"], _source_length(job, src))
+        if clip.get("layout") in render.CAM_LAYOUTS and not clip.get("facecam"):
+            face = _facecam(job, src)   # every clip comes through here: found, live and re-rendered after an edit
+            if face:
+                clip["facecam"] = face
         local = dict(clip, start=clip["start"] - off, end=clip["end"] - off, hook=roman.to_roman(clip.get("hook") or ""))
         near = _caption_words(job, clip, words, off) if clip.get("captions", True) else []
         if (job.get("options") or {}).get("sfx", True) and "sfx" not in clip:
@@ -454,6 +458,9 @@ def render_one(job, clip, words):
                 pass
         out = render.render_clip(src, d / "clips", clip["id"], local, near, job["width"], job["height"])
         clip.update(out, status="done", version=clip.get("version", 0) + 1, error=None)
+        missed = clip.get("layout") in render.CAM_LAYOUTS and out["layout_used"] != clip["layout"]
+        clip["layout_note"] = ("No facecam was found in this stream, so the game fills the screen instead. "
+                               "Re-render to look again." if missed else None)
         post = {k: clip.get(k) for k in ("title", "description", "hashtags", "alt_titles", "title_why", "seo_tags", "hook",
                                           "start", "end", "score", "sfx")}
         (d / "clips" / f"{clip['id']}.json").write_text(json.dumps(post, indent=1), encoding="utf-8")
@@ -598,24 +605,21 @@ def _covers(words: list, start: float, end: float) -> bool:
     return len(inside) >= 25 * minutes and inside[-1]["s"] >= start + 0.85 * (end - start)
 
 
-def _facecam(job) -> list | None:
-    """Where the webcam is in the source: once for the whole video, for every clip of it.
+def _facecam(job, src=None) -> list | None:
+    """Where the webcam is in the source, kept on the job for every clip of it once found.
 
-    Only a sure answer is used. A box that is a scoreboard drawn over the game would
-    put a picture of a scoreboard in the corner of the clip. One frame is also shown to
-    the AI, which tells a person from a game character better than any measurement can;
-    what it says is measured again on the picture, so it cannot do any harm."""
-    path = job.get("source_path")
+    One frame is also shown to the AI, which tells a person from a game character better than any measurement
+    can; what it says is measured again on the picture (facecam.find). Not found: looked for again on the next
+    clip that needs it, since a different stretch of the stream can show the webcam more clearly."""
+    if job.get("facecam"):
+        return job["facecam"]
+    path = src or job.get("source_path")
     if not path or not Path(path).is_file():
         return None
-    try:
-        box = facecam.detect(path, ask=brain.look_for_facecam)
-    except Exception:  # noqa: BLE001 - a missing facecam is not a failure
-        return None
-    if not box or box.get("conf") != "high":
-        return None
-    job["facecam"] = [box["x"], box["y"], box["w"], box["h"]]
-    return job["facecam"]
+    box = facecam.find(path, ask=brain.look_for_facecam)  # ponytail: one vision call per render until found
+    if box:
+        job["facecam"] = box
+    return box
 
 
 def _run_job(job):
@@ -638,7 +642,6 @@ def _run_job(job):
         job["game"] = game
     t0 = time.time()
     notes = []
-    face = False       # where the webcam is in the source, found once; False means not looked for yet
     usage.set_context(job["creator"], job["title"] or src.get("name"))
     resuming = bool(job.pop("resume", False)) and (d / "words.json").is_file()
     if resuming:   # after a restart: keep the transcript parts, clips and AI answers already made, and carry on
@@ -813,6 +816,8 @@ def _run_job(job):
     ahead = ThreadPoolExecutor(2, thread_name_prefix="ahead")
     heard, now_on = {}, [done_blocks]
 
+    speech_lang = "hi" if (job.get("options") or {}).get("hinglish") else ""   # Hindi goes to Whisper
+
     def hear(i):
         if i < len(blocks) and i >= done_blocks and i not in heard:
             a_, b_ = blocks[i]
@@ -822,7 +827,7 @@ def _run_job(job):
                 if now_on[0] == i and p - last[0] > 0.05:      # only the part being shown moves the bar
                     last[0] = p
                     _set(job, progress=max(job["progress"], 0.14 + 0.78 * ((a_ - lo) + p * (b_ - a_)) / max(1, hi - lo)))
-            heard[i] = ahead.submit(ctx.bind(transcribe.transcribe), audio[a_:b_], tp)
+            heard[i] = ahead.submit(ctx.bind(transcribe.transcribe), audio[a_:b_], tp, speech_lang)
 
     # The ad breaks and static screens of the whole video, found once. It reads the video end to end,
     # so it is done here rather than for each clip, and only when asked for.
@@ -876,12 +881,6 @@ def _run_job(job):
             c.update(id=f"clip{next_num:02d}", start=round(c["start"] + shift, 2),
                      end=round(c["end"] + shift, 2), style=o["style"], layout=o["layout"],
                      captions=o.get("captions", True), hinglish=o.get("hinglish", False), status="queued", version=0)
-            # Only the gameplay layout uses a webcam, so it is only looked for then, and only once: a
-            # stream with no webcam is not looked for again on every clip of it.
-            if o["layout"] == "gameplay" and face is False:
-                face = _facecam(job)
-            if face:
-                c["facecam"] = face
             job["clips"].append(c)
             futures.append((renders.submit(ctx.bind(make), c, list(words)), c))
         job["ai"] = {"model": model, "tokens": tokens, "note": "", "log": notes[-5:]}

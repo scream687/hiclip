@@ -56,12 +56,21 @@ Most checks should return []. Only return a moment you would stop scrolling for.
 RULES = """
 Rules:
 - Each clip is {min_len} to {max_len} seconds. Use the [seconds] values for start and end.
-- Start on the setup line, not mid-sentence. End right after the payoff or reaction, on the last word of a
-  complete sentence: never in the middle of a sentence or a thought. The clip must make sense on its own.
+- Every clip is setup -> peak -> reaction. Start 3 to 8 seconds BEFORE the moment, on the line that tells a
+  stranger what is going on (what the streamer is trying to do, who they are talking to, what just appeared),
+  not mid-sentence. The peak is the shout, the laugh, the fail, the clutch, the chat going wild: a (LOUD) or
+  (CHAT) line is usually inside it. End right after the reaction, on the last word of a complete sentence;
+  never trail on into small talk. The first 2 seconds must already pull the viewer in: no greetings, no
+  "okay so", no silence.
+- A stretch of normal talking with no peak is not a clip, however true or mildly funny it is.
 - Do not pick intros, sponsor reads, "like and subscribe", or dead air.
 - Skip weak moments. Fewer strong clips beat many weak ones. Return [] if nothing is worth clipping.
-- score: 0-100, how likely a stranger keeps watching. Be honest; most clips are 50-80.
-- hook: at most 5 words, ALL CAPS, shown as big text on the video. Curiosity, but true to what happens.
+- score: 0-100, how likely a stranger keeps watching. Be honest; most clips are 50-80. A clip with no (LOUD) or
+  (CHAT) line inside it, or one that needs the stream before it to make sense, scores under 60.
+- hook: 4 to 8 words, ALL CAPS, shown as big text over the first seconds. It gives the context a stranger needs
+  AND makes them wait for the payoff: who, doing what, and the tension. Like "SPEED TRIES TO ROB A COP",
+  "HE TRUSTED CHAT ONE LAST TIME", "THIS NPC WOULD NOT LEAVE HIM ALONE". Never a bare label ("CLUTCH", "THE
+  SHOT", "WAIT FOR IT", "CRAZY MOMENT", "OMG") and never a spoiler of the ending. True to what happens.
 - title: the best post title, at most 70 characters: the streamer's name, the game when there is one, and the
   feeling of the moment, ending with one fitting emoji (💀 😂 😭 🔥 😱). Like "IShowSpeed Gets Frustrated During a
   GTA 6 Mission 💀". Never clickbait the clip does not deliver.
@@ -98,9 +107,8 @@ _CTRL = re.compile(r"[\x00-\x1f\x7f]+")
 GAME_RULES = """
 This stream is {game}. Pick the moments that only mean something with that game in mind:
 - A play, a death, a jump scare, a glitch, a discovery, or the streamer reacting to one.
-- The hook is what was said at that moment, or, if nothing was said, the name of what happened in
-  two or three words ("1 VS 3", "THE SHOT", "HE GOT ME", "CLUTCH"). Never a sentence that needs
-  the game explained.
+- The hook says what is at stake in plain words a non-player understands ("1 HP LEFT AGAINST THREE PLAYERS",
+  "HE THOUGHT THE COP WAS FRIENDLY"). Never game jargon that needs the game explained.
 - The title names the game when the clip is about it.
 - The hashtags include {tags}.
 """
@@ -354,10 +362,25 @@ def find_clips(words, db, duration, title="", uploader="", max_clips=6, min_len=
         if _overlaps(s, e, clips):
             continue  # overlaps a better clip
         clips.append(_tidy(c, s, e, game))
-        if len(clips) >= max_clips:
-            break
+    clips = _keep_strong(clips, lines)[:max_clips]
     clips.sort(key=lambda c: c["start"])
     return clips, {"model": used_model, "tokens": tokens, "note": note}
+
+
+MIN_SCORE = 60        # a found clip below this is left out, unless it is the only one
+NO_PEAK_SCORE = 55    # a clip with no loud or chat-busy line inside it has no hype moment: at most this
+
+
+def _keep_strong(clips, lines):
+    """Only clips with a real peak, scored honestly. The AI tends to fill every slot it is given, so a clip with no
+    loud or chat-busy line inside is marked down (when the video has any such lines at all), and anything under
+    MIN_SCORE is dropped; if that leaves nothing, the single best one stays so a video never comes back empty."""
+    peaks = [l["s"] for l in lines if l["loud"] or l.get("chat")]
+    if peaks:
+        clips = [c if any(c["start"] <= t <= c["end"] for t in peaks)
+                 else dict(c, score=min(c["score"], NO_PEAK_SCORE)) for c in clips]
+    ranked = sorted(clips, key=lambda c: -c["score"])
+    return [c for c in ranked if c["score"] >= MIN_SCORE] or ranked[:1]
 
 
 def find_live_clips(words, z, now, chat=None, title="", uploader="", min_len=15, max_len=60, existing=(), game=None):

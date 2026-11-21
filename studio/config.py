@@ -129,6 +129,9 @@ SFX_DIR = DATA_DIR / "sfx"              # cached meme sounds and sound effects f
 # YouTube already has a word-by-word transcript of most videos. With this on, that is what the AI reads to find the
 # clips (seconds instead of transcribing hours), and our own model is run only on the clips themselves.
 YT_TRANSCRIPT = env("HICLIP_YT_TRANSCRIPT", "1") != "0"
+# A browser on this computer signed in to YouTube (chrome, safari, firefox, brave, edge...). When YouTube asks
+# "confirm you're not a bot", its cookies let every download, live check and chat reader through as that viewer.
+YT_COOKIES_FROM_BROWSER = env("HICLIP_YT_COOKIES_FROM_BROWSER", "").strip().lower()
 # the compact model for processors; a machine with a graphics card sets HICLIP_ASR_MODEL to the full-precision one
 ASR_MODEL_NAME = env("HICLIP_ASR_MODEL", "sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8")
 ASR_MODEL_DIR = MODELS_DIR / ASR_MODEL_NAME

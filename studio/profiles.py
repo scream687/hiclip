@@ -11,7 +11,7 @@ import time
 import urllib.request
 from urllib.parse import urlparse
 
-from . import creators, ctx
+from . import creators, ctx, media
 
 UA = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
       "Accept-Language": "en-US,en;q=0.9"}
@@ -191,7 +191,7 @@ def _ydl_info(url: str) -> dict:
     import yt_dlp
     from .live import _Quiet
     with yt_dlp.YoutubeDL({"quiet": True, "no_warnings": True, "skip_download": True, "noplaylist": True,
-                           "logger": _Quiet(), "socket_timeout": 10}) as y:
+                           "logger": _Quiet(), "socket_timeout": 10, **media.ydl_auth()}) as y:
         return y.extract_info(url, download=False) or {}
 
 
@@ -224,7 +224,18 @@ def live_now(platform: str, url: str) -> dict:
         _, raw = _get(base + "/live")
         html = raw.decode("utf-8", "replace")
         if '"isLiveNow":true' not in html:
-            return off
+            if '"isLiveNow"' in html:
+                return off
+            # No answer either way: YouTube sent a stripped page (it does when it takes us for a bot). yt-dlp, which
+            # carries the viewer's cookies when they are set, gets the real answer.
+            try:
+                i = _ydl_info(base + "/live")
+            except Exception:  # noqa: BLE001
+                return off
+            if not i.get("is_live"):
+                return off
+            return {"live": True, "viewers": i.get("concurrent_view_count"), "title": _no_date(i.get("title")),
+                    "started": i.get("release_timestamp") or i.get("timestamp"), "embed": i.get("id") or ""}
         vid = (re.search(r'<link rel="canonical" href="https://www\.youtube\.com/watch\?v=([\w-]{11})"', html) or [None, ""])[1]
         out = {"live": True, "viewers": None, "title": _meta(html, "og:title"), "started": None, "embed": vid}
         try:

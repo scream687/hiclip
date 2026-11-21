@@ -215,6 +215,103 @@ segment102.ts
         finally:
             jobs.save = orig_save
 
+    def test_render_does_not_fail_when_first_segment_past_clip_start(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td)
+            job = {
+                "id": "test_render",
+                "dir": str(p),
+                "clips": [],
+                "options": {"quality": "720"}
+            }
+            s = live.Session(job, {"buffer_min": 20})
+            s.ended = True
+
+            # Create dummy segment files
+            seg1 = s.buf / "p01_00001.ts"
+            seg2 = s.buf / "p01_00002.ts"
+            seg1.write_bytes(b"dummy1")
+            seg2.write_bytes(b"dummy2")
+
+            s.segments = [(seg1, 10.0, 16.0), (seg2, 16.0, 22.0)]
+            # clip requested from 5.0 to 20.0; segs[0][1] is 10.0 (> 5.0 + 2)
+            clip = {"id": "clip001", "start": 5.0, "end": 20.0, "status": "queued"}
+
+            orig_probe = media.probe
+            orig_run = media.run
+            orig_render_one = jobs.render_one
+            orig_save = jobs.save
+
+            media.probe = lambda f: {"width": 1280, "height": 720, "duration": 12.0}
+            media.run = lambda cmd: None
+            rendered = []
+            jobs.render_one = lambda j, c, w: rendered.append(c)
+            jobs.save = lambda j: None
+            s._align = lambda src, guess, dur: guess
+
+            try:
+                s._render(clip)
+                self.assertNotEqual(clip.get("status"), "error")
+                self.assertEqual(len(rendered), 1)
+                self.assertGreaterEqual(clip["start"], 10.0)
+            finally:
+                media.probe = orig_probe
+                media.run = orig_run
+                jobs.render_one = orig_render_one
+                jobs.save = orig_save
+
+    def test_render_errors_when_clip_completely_out_of_buffer(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td)
+            job = {
+                "id": "test_render_err",
+                "dir": str(p),
+                "clips": [],
+                "options": {}
+            }
+            s = live.Session(job, {"buffer_min": 20})
+            s.ended = True
+
+            # Create dummy segment file far in future compared to clip
+            seg1 = s.buf / "p01_00050.ts"
+            seg1.write_bytes(b"dummy")
+            s.segments = [(seg1, 500.0, 506.0)]
+
+            # clip is at 10.0 to 25.0
+            clip = {"id": "clip002", "start": 10.0, "end": 25.0, "status": "queued"}
+
+            orig_save = jobs.save
+            jobs.save = lambda j: None
+            try:
+                s._render(clip)
+                self.assertEqual(clip.get("status"), "error")
+                self.assertEqual(clip.get("error"), "That part of the stream is no longer in the buffer.")
+            finally:
+                jobs.save = orig_save
+
+    def test_scan_segments_preserves_queued_clip(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td)
+            job = {
+                "id": "test_scan_preserve",
+                "dir": str(p),
+                "clips": [{"id": "clip001", "start": 10.0, "end": 40.0, "status": "queued"}],
+                "options": {}
+            }
+            s = live.Session(job, {"buffer_min": 1})  # 1 min = 60s
+            seg1 = s.buf / "p01_00001.ts"
+            seg1.write_bytes(b"dummy")
+            s.segments = [(seg1, 5.0, 11.0)]
+            s.seg_clock = 200.0  # seg_clock - 60s = 140s, which would prune seg1 at 5-11s normally
+
+            s._scan_segments()
+            # Because clip001 is queued and needs start ~ 10.0, seg1 should be preserved
+            self.assertEqual(len(s.segments), 1)
+            self.assertTrue(seg1.exists())
+
 
 if __name__ == "__main__":
     unittest.main()

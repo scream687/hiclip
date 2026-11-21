@@ -395,6 +395,8 @@ img.av{object-fit:cover}
 .lay-prev .ph i{position:absolute;left:0;right:0;top:50%;transform:translateY(-50%);height:16px;background:linear-gradient(135deg,#FF8B33,#FFB27A)}
 .lay-prev.zoom .ph i{left:-6px;right:-6px;height:24px}
 .lay-prev.crop .ph i{left:0;right:0;top:0;height:100%;transform:none}
+.lay-prev.stack .ph i{top:auto;bottom:0;height:62%;transform:none}
+.lay-prev.stack .ph::after{content:"";position:absolute;left:0;right:0;top:0;height:38%;background:#E8C4A8}
 .seg{display:flex;gap:4px;background:#fff;border-radius:10px;padding:4px}
 .composer.compact .seg{background:var(--muted)}
 .seg button{flex:1;display:flex;flex-direction:column;align-items:center;gap:1px;padding:7px 6px;border:0;border-radius:7px;background:transparent;color:var(--dim);font-size:13px;font-weight:600;cursor:pointer;transition:background-color .15s ease,color .15s ease}
@@ -1402,7 +1404,7 @@ function drawAdd(variant) {
     </div></div></form>`;
   drawAtt();
 }
-const LAYOUT_SHORT = {blur:"Blurred fill", zoom:"Zoomed in", crop:"Fill screen", gameplay:"Gameplay + facecam"};
+const LAYOUT_SHORT = {blur:"Blurred fill", zoom:"Zoomed in", crop:"Fill screen", gameplay:"Gameplay + facecam", stack:"Facecam top, game below"};
 const CAP_LOOK = {bounce:{font:"'Archivo Black'", hl:"#FFFF00", up:true}, hype:{font:"Anton", hl:"#FF3C3C", up:true}, clean:{font:"Poppins", hl:"#6BD7FF", up:false, w:800}};
 function capPrev(k) {
   const s = CAP_LOOK[k] || {font:"inherit", hl:"#FF8B33", up:true};
@@ -2172,7 +2174,130 @@ async function drawSettings() {
 async function saveSettings() { const d = {}; $$("#sform [data-s]").forEach(i => d[i.dataset.s] = i.value); await send("/api/settings", d, "PUT"); }
 
 /* ============================================================ clip editor */
-function openClip(jid, cid) { D.jid = jid; D.cid = cid; D.sig = ""; drawClipDlg(true); $("#clipdlg").showModal(); }
+let _sfxAudio = null, _sfxPlayingUrl = null;
+function playSfx(url, btn) {
+  const fullUrl = "/api/sfx/audio?url=" + encodeURIComponent(url);
+  if (_sfxAudio && _sfxPlayingUrl === url) {
+    _sfxAudio.pause();
+    _sfxAudio = null;
+    _sfxPlayingUrl = null;
+    $$(".sfx-play-btn").forEach(b => { b.classList.remove("playing"); b.innerHTML = ic("play"); });
+    return;
+  }
+  if (_sfxAudio) {
+    _sfxAudio.pause();
+    _sfxAudio = null;
+  }
+  $$(".sfx-play-btn").forEach(b => { b.classList.remove("playing"); b.innerHTML = ic("play"); });
+  const a = new Audio(fullUrl);
+  _sfxAudio = a;
+  _sfxPlayingUrl = url;
+  if (btn) {
+    btn.classList.add("playing");
+    btn.innerHTML = ic("stop");
+  }
+  a.onended = () => {
+    _sfxAudio = null;
+    _sfxPlayingUrl = null;
+    if (btn) { btn.classList.remove("playing"); btn.innerHTML = ic("play"); }
+  };
+  a.onerror = () => {
+    _sfxAudio = null;
+    _sfxPlayingUrl = null;
+    if (btn) { btn.classList.remove("playing"); btn.innerHTML = ic("play"); }
+    toast("Could not play sound preview", "bad");
+  };
+  a.play().catch(() => {});
+}
+
+function renderSfxList() {
+  const el = $("#dsfx_list");
+  if (!el) return;
+  const j = jobOf(D.jid), c = j?.clips.find(x => x.id === D.cid);
+  const dur = c ? Math.max(1, (c.end - c.start)) : 60;
+  if (!D.sfx || !D.sfx.length) {
+    el.innerHTML = `<p class="help" style="margin:4px 0 8px;font-size:12px;color:var(--dim)">No sounds on this clip yet. Add meme punchlines or intro whooshes below.</p>`;
+    return;
+  }
+  el.innerHTML = `<div class="sfx-items" style="display:flex;flex-direction:column;gap:6px;margin:8px 0;">
+    ${D.sfx.map((s, idx) => `
+      <div class="sfx-row" style="display:flex;align-items:center;gap:8px;background:var(--muted);padding:6px 10px;border-radius:var(--r-sm);border:1px solid var(--line);">
+        <button type="button" class="btn sm icon ghost sfx-play-btn" data-act="playsfx" data-url="${esc(s.url)}" title="Preview sound" style="width:28px;height:28px;padding:0;border-radius:50%;">${ic("play")}</button>
+        <span style="font-weight:600;font-size:13px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(s.name)}">${esc(s.name)}</span>
+        <label style="display:flex;align-items:center;gap:4px;font-size:11px;color:var(--dim);margin:0">
+          <span>at</span>
+          <input type="number" step="0.1" min="0" max="${Math.round(dur*10)/10}" value="${s.time ?? 0}" data-sfx-idx="${idx}" data-sfx-field="time" style="width:58px;padding:2px 4px;font-size:12px;border:1px solid var(--line);border-radius:4px;background:#fff;text-align:right">s
+        </label>
+        <label style="display:flex;align-items:center;gap:4px;font-size:11px;color:var(--dim);margin:0">
+          <span>vol</span>
+          <input type="number" step="5" min="10" max="150" value="${Math.round((s.vol ?? 0.7) * 100)}" data-sfx-idx="${idx}" data-sfx-field="vol" style="width:48px;padding:2px 4px;font-size:12px;border:1px solid var(--line);border-radius:4px;background:#fff;text-align:right">%
+        </label>
+        <button type="button" class="btn sm icon ghost" data-act="delsfx" data-idx="${idx}" title="Remove sound" style="width:26px;height:26px;padding:0;color:var(--bad);">${ic("trash")}</button>
+      </div>
+    `).join("")}
+  </div>`;
+}
+
+function renderSfxSearch() {
+  const container = $("#dsfx_panel_container");
+  if (!container) return;
+  if (!D.sfxSearchOpen) {
+    container.innerHTML = "";
+    return;
+  }
+  const chips = ["Vine Boom", "Bruh", "Whoosh", "Dun Dun Dun", "Airhorn", "Anime Wow", "Emotional Damage", "Metal Pipe", "Fart Reverb", "What The Hell"];
+  container.innerHTML = `
+    <div id="sfx_panel" style="margin-top:6px;margin-bottom:12px;padding:12px;background:#F9F7F5;border:1px solid var(--line);border-radius:var(--r);">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+        <b style="font-size:13px;display:flex;align-items:center;gap:6px">${ic("play")} MyInstants Soundboard</b>
+        <button type="button" class="btn sm ghost" data-act="closesfxsearch" style="padding:2px 6px">${ic("x")}</button>
+      </div>
+      <div style="display:flex;gap:6px;margin-bottom:8px">
+        <input id="sfx_q" placeholder="Search sounds on MyInstants (e.g. vine boom, laugh, shock)..." style="flex:1;padding:6px 10px;border:1px solid var(--line);border-radius:var(--r-sm);font-size:13px;background:#fff">
+        <button type="button" class="btn sm primary" data-act="dosfxsearch">Search</button>
+      </div>
+      <div class="sfx-chips" style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:10px">
+        ${chips.map(ch => `<button type="button" class="chip sfx-chip" data-act="chipsfx" data-q="${esc(ch)}" style="font-size:11px;padding:2px 8px;cursor:pointer">${esc(ch)}</button>`).join("")}
+      </div>
+      <div id="sfx_results" style="max-height:220px;overflow-y:auto;display:flex;flex-direction:column;gap:4px">
+        <p style="font-size:12px;color:var(--dim);text-align:center;padding:12px 0">Loading sounds from MyInstants…</p>
+      </div>
+    </div>
+  `;
+  loadSfxResults("vine boom");
+}
+
+async function loadSfxResults(query) {
+  const resEl = $("#sfx_results");
+  if (!resEl) return;
+  resEl.innerHTML = `<p style="font-size:12px;color:var(--dim);text-align:center;padding:12px 0">Searching MyInstants for "${esc(query)}"…</p>`;
+  try {
+    const data = await api(`/api/sfx/search?q=${encodeURIComponent(query)}&limit=15`);
+    const results = data.results || [];
+    if (!results.length) {
+      resEl.innerHTML = `<p style="font-size:12px;color:var(--dim);text-align:center;padding:12px 0">No sounds found for "${esc(query)}". Try another search.</p>`;
+      return;
+    }
+    resEl.innerHTML = results.map(item => `
+      <div style="display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:6px;background:#fff;border:1px solid var(--line);">
+        <button type="button" class="btn sm icon ghost sfx-play-btn" data-act="playsfx" data-url="${esc(item.url)}" title="Preview sound" style="width:26px;height:26px;padding:0;border-radius:50%;">${ic("play")}</button>
+        <span style="font-size:12px;font-weight:500;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(item.name)}">${esc(item.name)}</span>
+        <button type="button" class="btn sm" data-act="addsfx" data-name="${esc(item.name)}" data-url="${esc(item.url)}" style="font-size:11px;padding:3px 8px;">+ Add</button>
+      </div>
+    `).join("");
+  } catch (e) {
+    resEl.innerHTML = `<p style="font-size:12px;color:var(--bad);text-align:center;padding:12px 0">Could not reach MyInstants: ${esc(e.message)}</p>`;
+  }
+}
+
+function openClip(jid, cid) {
+  D.jid = jid; D.cid = cid; D.sig = "";
+  const j = jobOf(jid), c = j?.clips.find(x => x.id === cid);
+  D.sfx = JSON.parse(JSON.stringify(c?.sfx || []));
+  D.sfxSearchOpen = false;
+  drawClipDlg(true);
+  $("#clipdlg").showModal();
+}
 function drawClipDlg(full) {
   const j = jobOf(D.jid), c = j?.clips.find(x => x.id === D.cid), dlg = $("#clipdlg");
   if (!c) { if (dlg.open) dlg.close(); return; }
@@ -2184,7 +2309,7 @@ function drawClipDlg(full) {
     dlg.innerHTML = `<div class="editor"><div class="stage" id="stage">${stage}</div>
       <div class="panel">
         <div class="job-head" style="margin:0"><div><span class="badge ${scoreCls(c.score)}" style="position:static">${c.judges ? "Words " + c.judges.words + (c.judges.reaction ? " · Reaction " + c.judges.reaction : "") : c.score ? "Score " + c.score : "Clipped by hand"}</span>
-          <p class="sub" style="margin-top:8px">${esc(c.reason || "")}</p></div><button class="btn icon ghost" data-act="closedlg" aria-label="Close">${ic("x")}</button></div>
+          <p class="sub" style="margin-top:8px">${esc(c.reason || "")}</p>${c.layout_note ? `<p class="sub" style="margin-top:6px">${esc(c.layout_note)}</p>` : ""}</div><button class="btn icon ghost" data-act="closedlg" aria-label="Close">${ic("x")}</button></div>
         <h3>On the video</h3>
         <label class="f">Big text<input data-f="hook" value="${esc(c.hook)}"></label>
         <div class="two" style="align-items:center;margin-bottom:8px">
@@ -2196,6 +2321,13 @@ function drawClipDlg(full) {
         <label class="f">Captions text<textarea data-f="caption_text" rows="3" placeholder="Caption words for this clip">${esc(c.caption_text || (c.fixed_words || []).map(w => w.w).join(" "))}</textarea><small class="hint">Edit caption words directly. Press 'Save and re-make clip' to re-render with your edits.</small></label>
         <div class="two"><label class="f">Start (seconds)<input data-f="start" type="number" step="0.5" value="${c.start}"></label>
           <label class="f">End (seconds)<input data-f="end" type="number" step="0.5" value="${c.end}"></label></div>
+        <h3>Meme sounds & SFX <small style="font-weight:400;color:var(--dim)">(MyInstants)</small></h3>
+        <div id="dsfx_list"></div>
+        <div class="row" style="gap:8px;margin-bottom:8px">
+          <button type="button" class="btn sm" data-act="opensfxsearch">${ic("plus")} Add sound from MyInstants</button>
+          <button type="button" class="btn sm ghost" data-act="sfxsuggest">${ic("bolt")} AI suggest sounds</button>
+        </div>
+        <div id="dsfx_panel_container"></div>
         <h3>Post text</h3>
         <label class="f">Title<input data-f="title" value="${esc(c.title)}"></label>
         ${c.title_why ? `<p class="help"><b>My pick:</b> ${esc(c.title_why)}</p>` : ""}
@@ -2215,6 +2347,7 @@ function drawClipDlg(full) {
           ${c.status === "done" ? `<a class="btn" href="${m}${esc(c.file)}?download=1">${ic("down")}Download</a>` : ""}
           <button class="btn" data-act="copy" data-j="${j.id}" data-c="${esc(c.id)}">${ic("copy")}Copy post text</button></div>
       </div></div>`;
+    renderSfxList();
   } else if (D.sig !== sig) $("#stage").innerHTML = stage;
   D.sig = sig;
   put($("#dposts"), postPills(c));
@@ -2531,10 +2664,73 @@ document.addEventListener("click", async e => {
       if (!await ask("Disconnect this account?", "Posts still waiting for it will fail.", "Disconnect", true)) return;
       await api(`/api/accounts/${d.id}`, {method:"DELETE"}); await tick(); return drawSettings();
     }
+    if (a === "playsfx") {
+      return playSfx(d.url, b);
+    }
+    if (a === "delsfx") {
+      const idx = Number(d.idx);
+      if (D.sfx && D.sfx[idx] !== undefined) {
+        D.sfx.splice(idx, 1);
+        renderSfxList();
+      }
+      return;
+    }
+    if (a === "opensfxsearch") {
+      D.sfxSearchOpen = !D.sfxSearchOpen;
+      renderSfxSearch();
+      return;
+    }
+    if (a === "closesfxsearch") {
+      D.sfxSearchOpen = false;
+      renderSfxSearch();
+      return;
+    }
+    if (a === "chipsfx") {
+      if ($("#sfx_q")) $("#sfx_q").value = d.q;
+      return loadSfxResults(d.q);
+    }
+    if (a === "dosfxsearch") {
+      const q = $("#sfx_q")?.value.trim() || "meme";
+      return loadSfxResults(q);
+    }
+    if (a === "addsfx") {
+      const vid = $("#stage video");
+      let curT = vid && !isNaN(vid.currentTime) ? Math.round(vid.currentTime * 10) / 10 : 0.5;
+      if (!D.sfx) D.sfx = [];
+      D.sfx.push({
+        name: d.name || "Sound",
+        url: d.url,
+        time: curT,
+        vol: 0.7,
+      });
+      renderSfxList();
+      toast(`Added "${d.name}" at ${curT}s`, "ok");
+      return;
+    }
+    if (a === "sfxsuggest") {
+      b.disabled = true;
+      try {
+        toast("Asking AI to detect meme & SFX moments…");
+        const res = await send(`/api/jobs/${D.jid}/clips/${D.cid}/sfx/suggest`, {}, "POST");
+        if (res.sfx && res.sfx.length) {
+          D.sfx = res.sfx;
+          renderSfxList();
+          toast(`Added ${res.sfx.length} recommended sounds!`, "ok");
+        } else {
+          toast("No sound moments suggested for this clip.", "bad");
+        }
+      } catch (err) {
+        toast(err.message, "bad");
+      } finally {
+        b.disabled = false;
+      }
+      return;
+    }
     if (a === "remake") {
       const body = {}; $$("#clipdlg [data-f]").forEach(i => {
         body[i.dataset.f] = i.type === "checkbox" ? i.checked : i.type === "number" ? Number(i.value) : i.value;
       });
+      body.sfx = D.sfx || [];
       await send(`/api/jobs/${D.jid}/clips/${D.cid}/render`, body); toast("Re-making the clip…", "ok"); return tick();
     }
     if (a === "postnow" || a === "postqueue") {
@@ -2545,6 +2741,28 @@ document.addEventListener("click", async e => {
       toast(a === "postnow" ? "Posting now" : "Added to the queue", "ok"); return tick();
     }
   } catch (err) { b.disabled = false; toast(err.message, "bad"); }
+});
+
+document.addEventListener("input", e => {
+  const t = e.target;
+  if (t.dataset.sfxIdx !== undefined) {
+    const idx = Number(t.dataset.sfxIdx);
+    const field = t.dataset.sfxField;
+    if (D.sfx && D.sfx[idx]) {
+      if (field === "time") D.sfx[idx].time = Math.max(0, Number(t.value));
+      if (field === "vol") {
+        D.sfx[idx].vol = Math.max(0.05, Math.min(2.5, Number(t.value) / 100));
+      }
+    }
+  }
+});
+
+document.addEventListener("keydown", e => {
+  if (e.target.id === "sfx_q" && e.key === "Enter") {
+    e.preventDefault();
+    const q = $("#sfx_q")?.value.trim() || "meme";
+    loadSfxResults(q);
+  }
 });
 
 $("#collapseBtn").innerHTML = ic("sidebar"); $("#menuBtn").innerHTML = ic("menu");

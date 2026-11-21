@@ -1,5 +1,6 @@
 """Getting video in: link download, probing, audio extraction, loudness."""
 import contextlib
+import functools
 import json
 import re
 import subprocess
@@ -95,12 +96,37 @@ class _Quiet:
     def error(self, m): pass
 
 
+@functools.cache
+def _browser_cookies_readable() -> bool:
+    """Whether the browser named in settings can be read. A missing browser or one this computer won't let hiclip
+    open (macOS privacy) would otherwise fail every download and recording, so hiclip carries on without it."""
+    if not config.YT_COOKIES_FROM_BROWSER:
+        return False
+    try:
+        from yt_dlp.cookies import extract_cookies_from_browser
+        extract_cookies_from_browser(config.YT_COOKIES_FROM_BROWSER)
+        return True
+    except Exception as e:  # ponytail: checked once per run; restart hiclip after granting access
+        print(f"hiclip: not using {config.YT_COOKIES_FROM_BROWSER} cookies ({e}); continuing without them")
+        return False
+
+
+def ydl_auth() -> dict:
+    """yt-dlp options that sign in as the viewer in the browser named in settings, or nothing."""
+    return {"cookiesfrombrowser": (config.YT_COOKIES_FROM_BROWSER,)} if _browser_cookies_readable() else {}
+
+
+def ydl_auth_args() -> list:
+    """The same, for yt-dlp run as a command."""
+    return ["--cookies-from-browser", config.YT_COOKIES_FROM_BROWSER] if _browser_cookies_readable() else []
+
+
 def _ydl(opts):
     import yt_dlp
     # a channel or playlist link is answered as "a list" straight away, never walked video by video
     return yt_dlp.YoutubeDL({"noplaylist": True, "quiet": True, "no_warnings": True, "logger": _Quiet(),
                              "extract_flat": "in_playlist", "playlistend": 1, "socket_timeout": 20,
-                             "concurrent_fragment_downloads": 4, **opts})
+                             "concurrent_fragment_downloads": 4, **ydl_auth(), **opts})
 
 
 def _video_format(height):

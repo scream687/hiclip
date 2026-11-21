@@ -11,7 +11,7 @@ from pathlib import Path
 
 import numpy as np
 
-from . import alerts, auth, brain, config, creators, ctx, facecam, games, jobs, load, media, roman, transcribe, usage
+from . import alerts, auth, brain, config, creators, ctx, games, jobs, load, media, roman, transcribe, usage
 
 # ":username!user@host PRIVMSG #channel :the message"
 _NICK = re.compile(r"(?m)^:([A-Za-z0-9_]{2,25})!")
@@ -71,7 +71,7 @@ def resolve(url: str) -> dict:
     """Ask yt-dlp for the stream's playable address. Raises NotLive if the channel is offline."""
     import yt_dlp
     opts = {"quiet": True, "no_warnings": True, "noplaylist": True, "logger": _Quiet(),
-            "format": "b[height<=720]/bv*[height<=720]+ba/b"}
+            "format": "b[height<=720]/bv*[height<=720]+ba/b", **media.ydl_auth()}
     if media.is_youtube(url) and media.youtube_paused():
         raise NotLive(media.YT_BLOCKED)
     try:
@@ -159,8 +159,6 @@ class Session:
         self.base = {}                # running averages the jumps are measured against, shown on the card
         self.spikes = 0
         self.game = ""                # which game this stream is, when it can be told
-        self.facecam_box = None       # where the webcam is, found once the first clip is made
-        self.facecam_checked = False  # the look is made once, even when it finds nothing
         self.ai_busy = 0.0            # when the AI check now running was started, 0 when none is
 
     def _ask_ai(self, window=None, why=None):
@@ -182,22 +180,6 @@ class Session:
                 self.ai_busy = 0.0
         self.ai_busy = now
         threading.Thread(target=ctx.bind(work), daemon=True, name="ai_check").start()
-
-    def _find_facecam(self, src):
-        """Where the webcam is in the stream, once. Only a sure answer is used.
-
-        One frame goes to the AI as well, and whatever it says is measured again on the
-        picture. A stream where the webcam is a square picture along the right edge, or
-        one where there is no webcam at all and the game has panels of its own, is told
-        apart from a real camera by what moves: a person sits still, the game does not."""
-        try:
-            box = facecam.detect(src, ask=brain.look_for_facecam)
-        except Exception:  # noqa: BLE001 - a missing facecam is not a failure
-            return None
-        if not box or box.get("conf") != "high":
-            return None
-        self.job["facecam"] = [box["x"], box["y"], box["w"], box["h"]]
-        return self.job["facecam"]
 
     # ---------------------------------------------------------------- the game this stream is
     def _game(self):
@@ -234,7 +216,8 @@ class Session:
     def _yt_chat_by_channel(self, url):
         import yt_dlp
         try:   # just the page's metadata (no formats, no download): the live video's own id
-            with yt_dlp.YoutubeDL({"quiet": True, "no_warnings": True, "skip_download": True, "logger": _Quiet()}) as y:
+            with yt_dlp.YoutubeDL({"quiet": True, "no_warnings": True, "skip_download": True, "logger": _Quiet(),
+                                   **media.ydl_auth()}) as y:
                 info = y.extract_info(url, download=False, process=False) or {}
         except Exception:  # noqa: BLE001 - offline or blocked: no chat, the recording goes on
             return
@@ -334,6 +317,19 @@ class Session:
                     self.seg_clock += dur
                 self.csv_seen[i] = len(rows)
             keep_from = self.seg_clock - self.settings["buffer_min"] * 60
+            active_starts = [
+                min(c["start"], c["start"] - self.clock_fix) - PAD - 15
+                for c in self.job.get("clips", [])
+                if c.get("status") in ("queued", "rendering") and not c.get("src") and "start" in c
+                and (not c.get("made_at") or time.time() - c["made_at"] < 900)
+            ]
+            active_starts += [
+                min(m["start"], m["start"] - self.clock_fix) - PAD - 15
+                for m in self.manual
+                if "start" in m
+            ]
+            if active_starts:
+                keep_from = min(keep_from, min(active_starts))
             while self.segments and self.segments[0][2] < keep_from:
                 self.segments.pop(0)[0].unlink(missing_ok=True)
 
@@ -384,7 +380,7 @@ class Session:
         out.mkdir(parents=True, exist_ok=True)
         for f in out.glob("*.live_chat.json*"):
             f.unlink(missing_ok=True)
-        proc = subprocess.Popen([sys.executable, "-m", "yt_dlp", "--quiet", "--no-warnings", "--skip-download",
+        proc = subprocess.Popen([sys.executable, "-m", "yt_dlp", "--quiet", "--no-warnings", "--skip-download", *media.ydl_auth_args(),
                                  "--write-subs", "--sub-langs", "live_chat", "-o", str(out / "chat.%(ext)s"),
                                  f"https://www.youtube.com/watch?v={video_id}"],
                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -467,7 +463,7 @@ class Session:
         if not hurry or n > SR * 24:
             # cut at the quietest moment between 4 and 6.5 s, so no word is split; the rest waits for the next pass
             _, cut = next(transcribe._chunks(audio, 4.0, 6.5))
-        words = transcribe.transcribe(audio[:cut])
+        words = transcribe.transcribe(audio[:cut], lang=self._speech_lang())
         off = base / SR
         for w in words:
             w["s"], w["e"] = round(w["s"] + off, 2), round(w["e"] + off, 2)
@@ -659,14 +655,23 @@ class Session:
     def _render(self, clip):
         """Runs on the render worker: copy the needed buffer pieces, then make the clip."""
         deadline = time.time() + 45
+        target_wait_end = max(clip["end"], clip["end"] - self.clock_fix)
         while time.time() < deadline:
             self._scan_segments()
-            if self.ended or (self.segments and self.segments[-1][2] >= clip["end"] + 1):
+            if self.ended or (self.segments and self.segments[-1][2] >= target_wait_end + 1):
                 break
             time.sleep(1)
+        pad = max(PAD, 15) + abs(self.clock_fix)
+        t_start = min(clip["start"], clip["start"] - self.clock_fix) - pad
+        t_end = max(clip["end"], clip["end"] - self.clock_fix) + pad
         with self.lock:
-            segs = [s for s in self.segments if s[2] > clip["start"] - PAD and s[1] < clip["end"] + PAD and s[0].exists()]
-        if not segs or segs[0][1] > clip["start"] + 2:
+            segs = [s for s in self.segments if s[2] > t_start and s[1] < t_end and s[0].exists()]
+        if not segs:
+            clip.update(status="error", error="That part of the stream is no longer in the buffer.")
+            jobs.save(self.job)
+            return
+        total_dur = segs[-1][2] - segs[0][1]
+        if total_dur < 3.0:
             clip.update(status="error", error="That part of the stream is no longer in the buffer.")
             jobs.save(self.job)
             return
@@ -685,31 +690,36 @@ class Session:
             return
         finally:
             lst.unlink(missing_ok=True)
-        # Only the gameplay layout uses a webcam, and only once the clip's own file is written: the
-        # webcam is looked for in it, once per stream.
-        if clip.get("layout") == "gameplay":
-            if not self.facecam_checked:
-                self.facecam_box = self._find_facecam(src)
-                self.facecam_checked = True
-            if self.facecam_box:
-                clip["facecam"] = self.facecam_box
         dur = segs[-1][2] - segs[0][1]
         offset = self._align(src, segs[0][1] + self.clock_fix, dur)
         self.clock_fix = offset - segs[0][1]  # the two clocks drift ~4 s an hour; start the next clip from here
         clip.update(src=str(src), src_offset=round(offset, 2), src_end=round(offset + dur, 2))
         clip["start"] = max(clip["start"], clip["src_offset"])
         clip["end"] = min(clip["end"], clip["src_end"])
+        if clip["end"] - clip["start"] < 3.0:
+            if clip["src_end"] - clip["src_offset"] >= 3.0:
+                clip["end"] = min(clip["src_end"], clip["start"] + min(30.0, clip["src_end"] - clip["src_offset"]))
+                if clip["end"] - clip["start"] < 3.0:
+                    clip["start"] = max(clip["src_offset"], clip["end"] - 3.0)
+            else:
+                clip.update(status="error", error="That part of the stream is no longer in the buffer.")
+                jobs.save(self.job)
+                return
         jobs.render_one(self.job, clip, list(self.words))
+
+    def _speech_lang(self):
+        """"hi" when this creator speaks Hindi or Hinglish: their speech then goes to Whisper."""
+        return "hi" if self.job.get("options", {}).get("hinglish") else ""
 
     def _align(self, src, guess, dur):
         """Where `src` really starts on the transcript clock. The video pieces and the audio feed keep separate
         clocks that drift apart, so transcribe the clip's own audio and line its words up with the live words.
         Local speech model only: no AI calls."""
-        key = lambda w: re.sub(r"[^a-z0-9]", "", w.lower())
+        key = lambda w: re.sub(r"[^a-z0-9]", "", roman.to_roman(w).lower())   # Hindi script matches too
         try:
             wav = src.with_suffix(".wav")
             media.extract_audio(src, wav)
-            heard = transcribe.transcribe(media.load_audio(wav))
+            heard = transcribe.transcribe(media.load_audio(wav), lang=self._speech_lang())
             wav.unlink(missing_ok=True)
             with self.lock:
                 near = [w for w in self.words if guess - 15 <= w["s"] <= guess + dur + 15]

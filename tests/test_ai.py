@@ -113,6 +113,16 @@ with ctx.as_user(u1.id):
 with ctx.as_user(u2.id):
     check("another user sees none of it", usage.summary({})["calls_total"] == 0)
 
+# ---- only clips with a peak, scored honestly: weak clips are not padded out to max_clips
+lines = [{"s": 5.0, "loud": True}, {"s": 40.0, "loud": False}]
+peak = {"start": 2.0, "end": 20.0, "score": 80}
+flat = {"start": 30.0, "end": 50.0, "score": 85}
+weak = {"start": 60.0, "end": 70.0, "score": 50}
+kept = brain._keep_strong([flat, peak, weak], lines)
+check("a clip with no loud or chat moment is marked down and left out", [c["start"] for c in kept] == [2.0], str(kept))
+check("a video with no peaks at all is judged on score alone", len(brain._keep_strong([flat, weak], [{"s": 1.0, "loud": False}])) == 1)
+check("when every clip is weak the best one still comes back", brain._keep_strong([weak], lines) == [weak])
+
 print("ALL PASSED" if not fails else f"{len(fails)} failed")
 import shutil  # noqa: E402
 db.engine.dispose()

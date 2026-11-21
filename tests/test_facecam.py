@@ -116,6 +116,19 @@ try:
     check("another picture moves the heading with it",
           render._hook_y("gameplay", 300, [0, 0, 300, 170]) < render._hook_y("gameplay", 300, [0, 0, 363, 376]), True)
     check("without a webcam the heading stays at the top", render._hook_y("crop", 300, None), 300)
+
+    # ---- the stack: webcam across the top at its own shape, the game below
+    f = render._filter("stack", 1920, [0, 300, 240, 160])
+    top = render._stack([0, 300, 240, 160])[0]
+    check("the webcam and the game are stacked", "vstack" in f and "overlay=" not in f, True)
+    check("the webcam takes a third to under half of the height", 0.30 * 1920 <= top <= 0.45 * 1920, True)
+    check("the two panes fill the frame", f"scale=1080:{top}" in f and f"crop=1080:{1920 - top}" in f, True)
+    _, cx, cy, cw, ch = render._stack([0, 300, 240, 160])
+    check("the webcam crop keeps the pane's shape, not stretched", abs(cw / ch - 1080 / top) < 0.02, True)
+    check("the webcam crop stays inside the webcam", cx >= 0 and cy >= 300 and cx + cw <= 240 and cy + ch <= 460, True)
+    check("without a webcam the stack is the game filling the screen", "vstack" not in render._filter("stack", 1920, None), True)
+    check("the heading sits under the webcam, not on the face", render._hook_y("stack", 300, [0, 300, 240, 160]) > top, True)
+    check("the stack is offered to the user", "stack" in render.LAYOUTS and "stack" in render.CAM_LAYOUTS, True)
 finally:
     shutil.rmtree(work, ignore_errors=True)      # the pictures are big; they must not be left behind
 

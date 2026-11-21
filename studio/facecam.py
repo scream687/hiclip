@@ -358,10 +358,24 @@ def detect(path: str | Path, ask=None) -> dict | None:
         # matches none of them is its own box measured and used.
         match = max(found, key=lambda c: _overlap(c, hinted)) if found else None
         if match and _overlap(match, hinted) >= MATCH:
-            return _finish(path, match, w, h, still)
+            done = _finish(path, match, w, h, still)
+            return done and {**done, "seen": True}
         seen = _seen(path, hinted, w, h, still, light)
         if seen:
-            return seen
+            return {**seen, "seen": True}
     if not found:
         return None
     return _finish(path, found[0], w, h, still)
+
+
+def find(path: str | Path, ask=None) -> list | None:
+    """[x, y, w, h] of the webcam in source pixels, or None. A box is used when the measurement is sure of it, or
+    when the AI saw a person there and the borders were measured to match: a streamer who jumps about moves too much
+    for the stillness test alone, but is still plainly a webcam."""
+    try:
+        box = detect(path, ask=ask)
+    except Exception:  # noqa: BLE001 - a missing facecam is not a failure
+        return None
+    if not box or not (box.get("conf") == "high" or box.get("seen")):
+        return None
+    return [box["x"], box["y"], box["w"], box["h"]]

@@ -273,7 +273,44 @@ def _decode_remote(pieces: list) -> list:
     return [(p["tokens"], p["timestamps"]) for p in got]
 
 
-def transcribe(audio: np.ndarray, on_progress=None) -> list:
+# Hindi and Hinglish: the speech model above only knows English and spells Hindi as English-sounding nonsense, so
+# speech in those goes to Whisper on the Mac's graphics chip (mlx-whisper). Elsewhere, or if it is not installed,
+# the English model is used as before.
+WHISPER_MODEL = os.environ.get("HICLIP_WHISPER_MODEL", "mlx-community/whisper-large-v3-turbo")
+_whisper_lock = threading.Lock()   # one at a time on the graphics chip
+_whisper_missing = False
+
+
+def _whisper(audio: np.ndarray) -> list | None:
+    """Hindi words in their own script, [{'w','s','e'}], or None when Whisper cannot run here (the caller then uses
+    the English model). roman.py and the caption tidy-up turn the script into Hinglish later."""
+    global _whisper_missing
+    if _whisper_missing:
+        return None
+    try:
+        import mlx_whisper
+    except Exception:  # noqa: BLE001 - not a Mac with Apple silicon, or not installed
+        _whisper_missing = True
+        print("  Hindi speech: mlx-whisper is not available here, so the English speech model is used.", flush=True)
+        return None
+    try:
+        with _whisper_lock:
+            got = mlx_whisper.transcribe(audio.astype(np.float32) / 32768.0, path_or_hf_repo=WHISPER_MODEL,
+                                         language="hi", word_timestamps=True, condition_on_previous_text=False)
+    except Exception as e:  # noqa: BLE001 - one bad piece must not stop a video: the English model takes it
+        print(f"  Hindi speech: Whisper failed ({str(e)[:120]}), the English speech model is used.", flush=True)
+        return None
+    return [{"w": w["word"].strip(), "s": round(float(w["start"]), 2), "e": round(float(w["end"]), 2)}
+            for seg in got.get("segments", []) for w in seg.get("words", []) if w["word"].strip()]
+
+
+def transcribe(audio: np.ndarray, on_progress=None, lang: str = "") -> list:
+    if (lang or "").lower().startswith(("hi", "ur")):
+        heard = _whisper(audio)
+        if heard is not None:
+            if on_progress:
+                on_progress(1.0)
+            return heard
     """Returns [{'w': word, 's': start_sec, 'e': end_sec}, ...] for the whole audio.
     Speech is cut at quiet moments into 12-24 s pieces; silent pieces are skipped."""
     global _remote_down_until

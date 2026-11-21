@@ -87,7 +87,54 @@ def _busy_chat(hyped: bool):
     s._watch_spikes()
     return s.spike
 check("a burst of backseating does not clip", _busy_chat(False), None)
-check("a burst of real hype is sent to the AI", (_busy_chat(True) or {}).get("why", ""), lambda w: "chat hype" in w)
+check("a burst of real hype is a jump", (_busy_chat(True) or {}).get("why", ""), lambda w: "chat hype" in w)
+check("chat erupting is clipped without the words judge", (_busy_chat(True) or {}).get("crowd"), "LET'S GO")
+
+s = _session("morning everyone")
+s.job["clips"] = []
+s.settings.update(max_len=60, min_gap_min=2, live_per_hour=0)
+s._crowd_clip({"t": 300.0, "why": "chat hype +250%", "crowd": "W, GG"})
+check("a crowd clip waits for the stretch before the burst and just after it", (s.manual[0]["start"], s.manual[0]["end"]), (210.0, 315.0))
+s._crowd_clip({"t": 340.0, "why": "chat hype +250%", "crowd": "W"})
+check("a second eruption right after is not clipped twice", len(s.manual), 1)
+check("and says why", s.verdicts[-1]["result"], "Too close to the last clip")
+
+# ---- the clip chat erupted over is cut on whole sentences, with its setup, at the length the story needs
+def _words(*sentences):
+    """Words spoken from t=200, one a second, a short pause after each sentence."""
+    out, t = [], 200.0
+    for sent in sentences:
+        ws = sent.split()
+        for i, w in enumerate(ws):
+            out.append({"w": w + ("." if i == len(ws) - 1 else ""), "s": t, "e": t + 0.8})
+            t += 1.0
+        t += 1.5
+    return out
+
+def _crowd(words, judge):
+    s = _session("morning everyone")
+    s.job.update(clips=[], uploader="Kai Cenat", title="GTA 6")
+    s.settings.update(min_len=15, max_len=60)
+    s.words, s.samples, s.t_done = words, 400 * live.SR, 400.0
+    live.brain.judge_transcript = judge
+    live.brain.describe = lambda *a, **k: {"score": 0, "category": "other", "hook": "HOOK", "title": "t",
+                                           "description": "", "hashtags": [], "highlight_words": []}
+    return s._crowd_pick({"start": 168.0, "end": 273.0, "crowd_t": 258.0, "why": "Chat erupted (W)"})
+
+story = _words("so I bought my own merch in the game today", "and I put it in the wardrobe last night",
+               "now it is gone I cannot find it anywhere chat", "wait wait is that it right there",
+               "oh my god there it is the yellow merch", "that is a banger dude what a fit", "anyway where was I going")
+picked = {"start": 211.5, "end": 260.3, "score": 84, "hook": "MERCH", "reason": "Finds his merch."}  # setup to "banger"
+c = _crowd(story, lambda *a, **k: ([dict(picked)], 10))
+check("when the AI finds the story, that is the clip", (c["start"], c["end"], c["score"]), (211.5, 260.3, 84))
+c = _crowd(story, lambda *a, **k: ([dict(picked, start=210.0, end=240.0)], 10))
+ends = set(round(w["e"], 1) for w in story if w["w"].endswith("."))
+check("a pick that misses the burst is not used: the fallback ends on a whole sentence", round(c["end"] - 0.35, 1) in ends
+      or any(abs(c["end"] - e) < 0.4 for e in ends), True)
+def _broken(*a, **k): raise RuntimeError("no AI")
+c = _crowd(story, _broken)
+check("with no AI the clip still ends on a whole sentence", any(abs(c["end"] - e) < 0.4 for e in ends), True)
+check("and starts at the start of a line", any(abs(c["start"] + 0.15 - w["s"]) < 0.01 for w in story), True)
 
 # ---- a slow AI answer must not stop the recording
 import time as _time

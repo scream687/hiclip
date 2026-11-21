@@ -442,6 +442,9 @@ you will see it again in the next check.
 Pick up to {n} moments that would work as standalone clips for someone who has never seen the stream:
 funny moments, fails, clutch plays, rage, shock, hot takes, or a short story with a payoff.
 """
+CHAT_ERUPTED = ("\nChat erupted with hype at {t:.0f}s. Chat reacts a few seconds late, so something happened just "
+                "before that. The clip must contain it: start where its setup starts, so a stranger knows what is going "
+                "on, and end on a finished sentence right after the payoff.\n")
 MUST_PICK = "This time you MUST return the single best moment in this stretch, even if it is only decent."
 NOT_MUST = ("Return the best moment in this stretch with an honest score (most stretches score under 60; a moment you "
             "would stop scrolling for scores 80+). Return [] only when nobody says anything worth hearing.")
@@ -502,14 +505,15 @@ SIG_SCHEMA = {
 
 
 def judge_transcript(words, start, now, title="", uploader="", min_len=15, max_len=60, existing=(), n=2, must=False,
-                    game=None, timeout=None):
-    """Judge 1: words only. Returns (clips, tokens)."""
+                    game=None, timeout=None, chat_at=None):
+    """Judge 1: words only. Returns (clips, tokens). `chat_at`: the second chat erupted, when that is why it was asked."""
     lines = make_lines(words)
     if len(lines) < 3:
         return [], 0
     prompt = (TRANSCRIPT_JUDGE.format(title=_safe(title) or "unknown", uploader=_safe(uploader) or "unknown", start=start, now=now,
                                       n=n, must=MUST_PICK if must else NOT_MUST)
               + _game_rules(game)
+              + (CHAT_ERUPTED.format(t=chat_at) if chat_at is not None else "")
               + RULES.format(min_len=min_len, max_len=max_len, transcript=_fmt(lines)))
     out, _model, spent = ask_ai(prompt, purpose="Live: words judge", timeout=timeout)
     clips = []

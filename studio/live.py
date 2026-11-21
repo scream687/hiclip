@@ -39,8 +39,22 @@ HYPE_WORDS = [(label, re.compile(rx, re.I)) for label, rx in [
     ("POG", r"\bpog\w*\b"), ("CLIP IT", r"\bclip\s*(it|that)\b"), ("HOLY", r"\bholy\b"), ("I WAS HERE", r"\bi\s*was\s*here\b"),
     ("OHHH", r"\bo+h{3,}\b|\bo{3,}h*\b|\bou+\b"), ("NOOO", r"\bno{3,}\b"), ("RIP", r"\brip\b"),
     ("L", r"(?<![\w'/])l+(?![\w'/])"),
-    ("LMAO", r"\blma+o+\b|\blo+l+\b|\bkekw\b|\blul\b|\bicant\b"), ("🔥", r"🔥"), ("😂", r"😂|🤣"),
-    ("💀", r"💀|☠|🥀"), ("😭", r"😭"), ("😱", r"😱|😮|🤯")]]
+    ("LMAO", r"\blma+o+\b|\blo+l+\b|\bkekw\b|\blul\b|\bicant\b|\b(ha){2,}h?\b|\bxd+\b"
+             r"|\bj[aeiou](j[aeiou]){2,}\b|\bk{4,}\b|ه{3,}|哈{2,}|ㅋ{3,}"),  # haha, jajaja, kkkk, هههه, 哈哈, ㅋㅋㅋ
+    ("LET'S GO", r"\bvamo+s?\b|\bbora+\b|\ballez\b|\bandiamo\b|\bchal+o+\b"),
+    ("INSANE", r"\binsane\b|\bcrazy\b|\bwild\b|\bwtf\b|\bbro what\b|\bwhat the\b"),
+    ("CINEMA", r"\bcinema\b|\bgoated\b|🐐|\bop\b|\bhype+\b"),  # not "goat", "fire", "peak": ordinary words too ("🔥", r"🔥"), ("😂", r"😂|🤣"),
+    ("💀", r"💀|☠|🥀"), ("😭", r"😭"), ("😱", r"😱|😮|🤯|😳")]]
+
+
+def _get_json(url: str, body: bytes | None = None) -> str:
+    """A public JSON endpoint, asked like a browser would (Kick turns plain scripts away)."""
+    import urllib.request
+    hdr = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) "
+                         "Chrome/131 Safari/537.36", "Accept": "application/json"}
+    if body:
+        hdr["Content-Type"] = "application/json"
+    return urllib.request.urlopen(urllib.request.Request(url, body, hdr), timeout=20).read().decode("utf-8", "replace")
 
 
 def hype_label(text: str) -> str | None:
@@ -228,6 +242,9 @@ class Session:
         if m:
             threading.Thread(target=ctx.bind(self._chat), args=(m.group(1).lower(),), daemon=True).start()
         url = self.job["source"].get("url") or ""
+        k = re.match(r"^https?://(?:www\.)?kick\.com/([A-Za-z0-9_-]+)", url)
+        if k:
+            threading.Thread(target=ctx.bind(self._kick_chat), args=(k.group(1).lower(),), daemon=True).start()
         yt_id = _youtube_video_id(url)
         if yt_id:
             threading.Thread(target=ctx.bind(self._yt_chat), args=(yt_id,), daemon=True).start()
@@ -354,7 +371,7 @@ class Session:
             while self.segments and self.segments[0][2] < keep_from:
                 self.segments.pop(0)[0].unlink(missing_ok=True)
 
-    # ---------------------------------------------------------------- chat (Twitch only)
+    # ---------------------------------------------------------------- chat: Twitch, Kick, YouTube
     def _chat(self, channel):
         while not self.stop_flag.is_set() and not self.ended:
             try:
@@ -376,17 +393,44 @@ class Session:
                         if line.startswith(b"PING"):
                             s.sendall(b"PONG :tmi.twitch.tv\r\n")
                         elif b" PRIVMSG #" in line:
-                            with self.lock:
-                                second = int(self.samples / SR)
-                                self.chat[second] += 1
-                                self.chat_total += 1
-                                # hype is counted once per person a second: one person spamming is not a crowd
-                                raw = line.decode("utf-8", "replace")
-                                who = _NICK.findall(raw)
-                                self._count_hype(second, raw.split(" PRIVMSG #", 1)[1].partition(" :")[2],
-                                                 who[0].lower() if who else "")
+                            raw = line.decode("utf-8", "replace")
+                            who = _NICK.findall(raw)
+                            self._on_chat(raw.split(" PRIVMSG #", 1)[1].partition(" :")[2], who[0] if who else "")
                 s.close()
             except Exception:  # noqa: BLE001
+                pass
+            self.chat_on = False
+            self.stop_flag.wait(5)
+
+    def _kick_chat(self, slug):
+        """Kick chat over its public Pusher websocket, read-only and with no login. Kick hands out the Pusher key per
+        request (it changes), so it is asked for again on every reconnect."""
+        import websocket
+        while not self.stop_flag.is_set() and not self.ended:
+            try:
+                d = json.loads(_get_json(f"https://kick.com/api/v2/channels/{slug}"))
+                room, cid = d["chatroom"]["id"], d["id"]
+                body = json.dumps({"client": {"id": "hiclip", "type": "web"},
+                                   "capabilities": {"accepted_providers": [{"provider": "pusher"}]}}).encode()
+                c = json.loads(_get_json(f"https://web.kick.com/api/v1/realtime/channels/{cid}/chat/connection",
+                                         body))["data"]["connections"][0]["credentials"]
+                ws = websocket.create_connection(
+                    f"wss://ws-{c['cluster']}.pusher.com/app/{c['app_key']}?protocol=7&client=js&version=8.4.0&flash=false",
+                    timeout=30, origin="https://kick.com")
+                ws.send(json.dumps({"event": "pusher:subscribe", "data": {"auth": "", "channel": f"chatrooms.{room}.v2"}}))
+                self.chat_on = True
+                while not self.stop_flag.is_set() and not self.ended:
+                    try:
+                        f = json.loads(ws.recv())
+                    except websocket.WebSocketTimeoutException:
+                        continue
+                    if f.get("event") == "pusher:ping":
+                        ws.send(json.dumps({"event": "pusher:pong", "data": {}}))
+                    elif "ChatMessageEvent" in f.get("event", ""):
+                        m = json.loads(f["data"]) if isinstance(f.get("data"), str) else f.get("data") or {}
+                        self._on_chat(m.get("content", ""), (m.get("sender") or {}).get("username", ""))
+                ws.close()
+            except Exception:  # noqa: BLE001 - offline, blocked or the stream ended: the recording goes on
                 pass
             self.chat_on = False
             self.stop_flag.wait(5)
@@ -430,11 +474,8 @@ class Session:
                             if text.strip().startswith("!"):   # bot commands (!giveaway): a raffle, not hype
                                 continue
                             author = r.get("authorExternalChannelId") or (r.get("authorName") or {}).get("simpleText", "")
-                            with self.lock:
-                                self.chat_on = True
-                                self.chat[second] += 1
-                                self.chat_total += 1
-                                self._count_hype(second, text, author.lower() if author else "")
+                            self.chat_on = True
+                            self._on_chat(text, author, second)
                 if proc.poll() is not None and not path:
                     return                                # yt-dlp could not open this stream's chat
                 self.stop_flag.wait(2.0)
@@ -471,6 +512,11 @@ class Session:
     AUTO_BEFORE, AUTO_AFTER, AUTO_GAP = 30, 20, 60   # seconds of stream sent around a jump; least time between jumps
     JUMP = 0.6                                        # 60% louder or busier than the last three minutes
     HYPE_MIN = 0.5                                    # hype messages a second before a jump counts (30 a minute)
+    # Chat this far above its normal has voted: clip it without waiting for the words judge, which cannot see a
+    # cutscene or a streamer going "woahhh". ponytail: one fixed bar; a per-creator setting if streams need different.
+    CROWD_X = 2.0
+    CROWD_BEFORE, CROWD_AFTER = 25, 8                 # chat reacts late: most of the clip is before the burst
+    CROWD_LOOK, CROWD_WAIT = 90, 15                   # the AI reads this much before the burst, and after it
 
     def _watch_spikes(self):
         """Always on. Keep a running average of loudness and chat over the last three minutes (leaving out the
@@ -492,16 +538,21 @@ class Session:
         if loud_jump >= pct:
             why.append(f"loudness +{round(loud_jump * 100)}%")
         chat_base = chat_now = None
+        crowd = ""
         if chat is not None:
             chat_base = sum(chat[:-10]) / max(1, len(chat) - 10)
             chat_now = sum(chat[-10:]) / 10        # YouTube hands chat over every few seconds: look a little longer
             if chat_now >= max(self.HYPE_MIN, chat_base * (1 + pct)):
                 why.append(f"chat hype +{round((chat_now / max(chat_base, 0.01) - 1) * 100)}%")
+                if chat_now >= chat_base * self.CROWD_X:
+                    with self.lock:
+                        top = collections.Counter(w for t, w in self.hype_said if t >= n - 10).most_common(3)
+                    crowd = ", ".join(w for w, _ in top) or "hype"
         self.base = {"loud_db": round(20 * np.log10(max(base, 1e-6)), 1), "loud_now": round(loud_jump * 100),
                      "chat": round(chat_base, 2) if chat_base is not None else None,
                      "chat_now": round(chat_now, 2) if chat_now is not None else None, "pct": round(pct * 100)}
         if why and not self.spike and n - self.last_spike >= self.AUTO_GAP:
-            self.spike = {"t": float(n - 3), "why": ", ".join(why)}
+            self.spike = {"t": float(n - 3), "why": ", ".join(why), "crowd": crowd}
             self.last_spike = n
             self.spikes += 1
 
@@ -579,6 +630,25 @@ class Session:
             if added >= (1 if every <= 2 else 2):
                 break
 
+    def _crowd_clip(self, sp):
+        """Chat erupted (CROWD_X over its normal): it will be clipped, whatever the words judge would score it.
+        The clip itself is chosen once the transcript has caught up (_crowd_pick). The creator's gap between clips
+        and clips-an-hour limit still hold."""
+        st = self.settings
+        t = sp["t"]
+        start = max(0.0, t - self.CROWD_BEFORE)
+        verdict = {"t": round(t), "transcript": None, "reaction": None, "trigger": "Jump: " + sp["why"]}
+        hour = [c for c in self.job["clips"] if time.time() - c.get("made_at", 0) < 3600]
+        if st["live_per_hour"] and len(hour) >= st["live_per_hour"]:
+            self.skipped += 1
+            return self._verdict(verdict, f"Skipped: {st['live_per_hour']} clips this hour already")
+        taken = [k["crowd_t"] - self.CROWD_BEFORE if "crowd_t" in k else k["start"] for k in self.job["clips"] + self.manual]
+        if any(abs(start - k) < st["min_gap_min"] * 60 for k in taken):
+            return self._verdict(verdict, "Too close to the last clip")
+        self.manual.append({"start": max(0.0, t - self.CROWD_LOOK), "end": t + self.CROWD_WAIT, "crowd_t": t,
+                            "why": f"Chat erupted ({sp['crowd']})"})
+        self._verdict(verdict, f"Clipping: chat erupted ({sp['crowd']})")
+
     def _verdict(self, v, result):
         self.verdicts.append(dict(v, result=result))
         del self.verdicts[:-6]
@@ -608,18 +678,55 @@ class Session:
                         self.last_trigger = t
                         self.manual.append({"start": max(0.0, t - 30), "end": t + 2, "why": f'Someone said "{p}"'})
 
+    def _crowd_pick(self, req):
+        """The clip chat erupted over. The AI reads the stretch before the burst and picks where the story starts
+        and where the payoff ends, in whole sentences. With too few words (a cutscene, a streamer only going
+        "woahhh") or no AI, the moment just before the burst is taken, still cut on whole sentences."""
+        st, t = self.settings, req["crowd_t"]
+        end_at = min(req["end"], self.samples / SR)
+        win = [w for w in self.words if req["start"] <= w["s"] <= end_at]
+        try:
+            cands, tok = brain.judge_transcript(win, req["start"], end_at, self.job["title"], self.job["uploader"],
+                                                st["min_len"], st["max_len"], self.job["clips"], n=1, must=True,
+                                                game=self._game(), timeout=config.LIVE_AI_TIMEOUT, chat_at=t)
+            self.checks += 1
+            self.tokens += tok
+            # it must hold what chat reacted to: the seconds just before the burst
+            c = next((c for c in cands if c["start"] <= t - 3 and c["end"] >= t - self.CROWD_AFTER), None)
+            if c:
+                c["reason"] = f"{req['why']}. {c.get('reason', '')}".strip()
+                return c
+        except Exception as e:  # noqa: BLE001
+            self.job["ai"]["last_error"] = str(e)[-200:]
+        start = max(0.0, t - self.CROWD_BEFORE)
+        lines = brain.make_lines(win)
+        s, e = (brain._snap({"start": start, "end": t + self.CROWD_AFTER}, lines, win, st["min_len"], st["max_len"],
+                            end_at) if lines else (start, min(t + self.CROWD_AFTER, end_at)))
+        c = self._describe(" ".join(w["w"] for w in win if s <= w["s"] <= e))
+        c.update(start=s, end=e, score=0, reason=req["why"])
+        return c
+
+    def _describe(self, text):
+        """Hook and title for a clip that is being made whatever its score. A slow or broken AI costs it its hook,
+        not the clip."""
+        usage.set_context(self.job["creator"], self.job["title"] or "Live stream")
+        try:
+            return brain.describe(text, self.job["title"], self.job["uploader"], game=self._game(),
+                                  timeout=config.LIVE_AI_TIMEOUT)
+        except Exception as e:  # noqa: BLE001
+            self.job["ai"]["last_error"] = str(e)[-200:]
+            return {"score": 0, "category": "other", "hook": "", "title": self.job["title"],
+                    "description": "", "hashtags": [], "highlight_words": []}
+
     def _manual_step(self):
         for req in [m for m in self.manual if m["end"] <= self.t_done or self.ended]:
-            text = " ".join(w["w"] for w in self.words if req["start"] <= w["s"] <= req["end"])
-            usage.set_context(self.job["creator"], self.job["title"] or "Live stream")
-            try:
-                c = brain.describe(text, self.job["title"], self.job["uploader"], game=self._game(),
-                                   timeout=config.LIVE_AI_TIMEOUT)
-            except Exception as e:  # noqa: BLE001
-                # Someone asked for this clip by hand. A slow or broken AI costs it its hook, not the clip.
-                self.job["ai"]["last_error"] = str(e)[-200:]
-                c = {"score": 0, "category": "other", "hook": "", "title": self.job["title"],
-                     "description": "", "hashtags": [], "highlight_words": []}
+            if req.get("crowd_t") is not None:
+                usage.set_context(self.job["creator"], self.job["title"] or "Live stream")
+                c = self._crowd_pick(req)
+                self.manual.remove(req)
+                self._add_clip(c)
+                continue
+            c = self._describe(" ".join(w["w"] for w in self.words if req["start"] <= w["s"] <= req["end"]))
             self.manual.remove(req)
             c.update(start=round(req["start"], 2), end=round(min(req["end"], self.samples / SR), 2), score=0)
             if req.get("why"):
@@ -732,6 +839,14 @@ class Session:
     HYPE_NOW = 30      # seconds of chat that count as "now": YouTube hands chat over in batches every few seconds
     HYPE_NORMAL = 180  # the stretch before that, which counts as "normal" for this stream
 
+    def _on_chat(self, text: str, who: str = "", second: int | None = None):
+        """One chat message, from any site: counted for chat activity and, when it is, for hype."""
+        with self.lock:
+            second = int(self.samples / SR) if second is None else second
+            self.chat[second] += 1
+            self.chat_total += 1
+            self._count_hype(second, text, who.lower())
+
     def _count_hype(self, second: int, text: str, who: str = ""):
         """Count one chat message as hype when it is, once per person per second. Called under the lock, from the
         chat reader threads."""
@@ -812,7 +927,10 @@ class Session:
                     self._ask_ai((said["t"] - self.SAID_BEFORE, said["t"] + self.SAID_AFTER), said["why"])
                 elif sp and (self.t_done >= sp["t"] + self.AUTO_AFTER or (self.ended and not busy)):
                     self.spike = None
-                    self._ask_ai((sp["t"] - self.AUTO_BEFORE, sp["t"] + self.AUTO_AFTER), "Jump: " + sp["why"])
+                    if sp.get("crowd"):
+                        self._crowd_clip(sp)
+                    else:
+                        self._ask_ai((sp["t"] - self.AUTO_BEFORE, sp["t"] + self.AUTO_AFTER), "Jump: " + sp["why"])
                 elif self.t_done - self.last_check >= every * 60 or (self.ended and not busy and self.t_done > self.last_check):
                     self._ask_ai()
                 self._publish()

@@ -1032,6 +1032,20 @@ def sfx_audio(url: str):
     return FileResponse(path, media_type="audio/mpeg", headers={"Cache-Control": "public, max-age=86400"})
 
 
+@app.get("/api/campaigns")
+def campaigns_list():
+    """Every creator's campaign: name, the tag each platform's posts start with, the brief's hashtags and rules."""
+    from . import campaign
+    out = []
+    for c in creators.all_creators():
+        if not (c.get("campaign_brief") or c.get("campaign_name") or c.get("campaign_tags")):
+            continue
+        out.append({"creator": c["id"], "creator_name": c.get("name", ""), "name": c.get("campaign_name", ""),
+                    "tags": campaign.tags_for(c), "hashtags": campaign.read_brief(c.get("campaign_brief", ""))["hashtags"],
+                    "brief": c.get("campaign_brief", "")})
+    return {"campaigns": out}
+
+
 @app.get("/api/jobs/{jid}/clips/{cid}/post-text")
 def clip_post_text(jid: str, cid: str, platform: str = "tiktok"):
     """What a post of this clip says on one platform, campaign @name first (for the copy buttons)."""
@@ -1058,7 +1072,8 @@ def sfx_suggest(jid: str, cid: str):
         words = json.loads((Path(job["dir"]) / "words.json").read_text(encoding="utf-8"))
     except Exception:  # noqa: BLE001
         pass
-    suggested = sfx.suggest_for_clip(clip, words, game=job.get("game"), title=job.get("title"))
+    src = next(iter(sorted(Path(job["dir"]).glob("source.*"))), None) if not clip.get("src_offset") else None
+    suggested = sfx.suggest_for_clip(clip, words, game=job.get("game"), title=job.get("title"), src=src)
     return {"sfx": suggested}
 
 

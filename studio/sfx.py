@@ -364,7 +364,75 @@ def find_sound(query: str) -> dict | None:
     return None
 
 
-def suggest_for_clip(clip: dict, words: list = None, game: str = "", title: str = "") -> list:
+HYPE_WORDS = ("airhorn", "air horn", "mlg", "hype", "cheer", "victory", "crowd", "wow")
+UNDER_VOICE_DB = 6.0      # a meme sound at vol 1.0 sits this far under the streamer's voice (user, 26 Nov: too loud)
+_LOUD_CACHE: dict = {}
+
+
+def loudness(path, start: float = None, dur: float = None, typical: bool = False) -> float:
+    """Integrated loudness (LUFS) of a file or a stretch of it; for a sound too short to measure that way, its
+    loudest 400 ms. typical=True: the median 400 ms loudness instead (normal talking level, not pulled up by a
+    shout). -70 when silent or unreadable."""
+    import statistics
+    import subprocess
+    key = (str(path), start, dur, typical, Path(path).stat().st_mtime if Path(path).exists() else 0)
+    if key in _LOUD_CACHE:
+        return _LOUD_CACHE[key]
+    cmd = ["ffmpeg", "-nostats", "-hide_banner"]
+    if start is not None:
+        cmd += ["-ss", f"{max(0.0, start):.3f}"]
+    if dur is not None:
+        cmd += ["-t", f"{max(0.1, dur):.3f}"]
+    cmd += ["-i", str(path), "-vn", "-af", "ebur128", "-f", "null", "-"]
+    try:
+        err = subprocess.run(cmd, capture_output=True, text=True, timeout=120).stderr
+    except Exception:  # noqa: BLE001
+        return -70.0
+    i = re.findall(r"I:\s+(-?[\d.]+) LUFS", err)
+    m = [float(x) for x in re.findall(r"M:\s*(-?[\d.]+)", err)]
+    val = float(i[-1]) if i else -70.0
+    if typical:
+        heard = [x for x in m if x > -60]
+        val = statistics.median(heard) if heard else -70.0
+    elif val <= -60 and m:
+        val = max(m)
+    _LOUD_CACHE[key] = val
+    return val
+
+
+def gain_for(sound_path, voice_lufs: float, vol: float) -> float:
+    """The linear gain that puts a sound UNDER_VOICE_DB under the voice at vol 1.0 (vol scales from there)."""
+    have = loudness(sound_path)
+    if have <= -60 or voice_lufs <= -60:
+        return max(0.05, min(1.0, vol * 0.5))
+    db = max(-40.0, min(12.0, voice_lufs - UNDER_VOICE_DB - have))
+    return max(0.0, vol) * 10 ** (db / 20)
+
+
+def is_hype(item: dict) -> bool:
+    name = f"{item.get('name', '')} {item.get('url', '')} {item.get('search', '')}".lower()
+    return any(w in name for w in HYPE_WORDS)
+
+
+def calm_spots(items: list, src, start: float, dur: float) -> list:
+    """Drops hype sounds (air horn and friends) where the streamer is already loud: they add nothing over a
+    shout (user, 26 Nov). Also drops any sound in the first half second."""
+    if not src or not Path(src).exists():
+        return [x for x in items if x.get("time", 0) >= 0.5]
+    talk = loudness(src, start, dur, typical=True)
+    out = []
+    for x in items:
+        t = float(x.get("time", 0))
+        if t < 0.5:
+            continue
+        if is_hype(x) and loudness(src, start + max(0.0, t - 0.75), 1.5) >= talk + 4.0:
+            log.info("skipped %s at %.1fs: the streamer is already hyped there", x.get("name"), t)
+            continue
+        out.append(x)
+    return out
+
+
+def suggest_for_clip(clip: dict, words: list = None, game: str = "", title: str = "", src=None) -> list:
     """Suggests 1 to 3 meme sounds and SFX for a clip based on its mood, category, hook and timing."""
     start = clip.get("start", 0.0)
     end = clip.get("end", 0.0)
@@ -390,13 +458,19 @@ Duration: {dur:.1f} seconds (from 0.0s to {dur:.1f}s)
 Words spoken:
 {spoken[:1200]}
 
-Pick 1 or 2 moments to add a short meme sound effect or punchline/reaction SFX from MyInstants (e.g. vine boom, bruh, emotional damage, dun dun dun, airhorn, metal pipe, whoosh, funny laugh, anime wow).
-Return a JSON array of objects:
-[
-  {{"offset": 5.2, "search": "vine boom", "vol": 0.7}}
-]
+Pick at most 2 moments that a meme sound makes funnier. Usually that is the pause right AFTER a punchline, a
+fail or an awkward silence, not on top of the streamer talking. Rules:
+- never in the first second; offset is the second the sound starts, read from the [seconds] above
+- never a hype sound (airhorn, MLG, crowd cheer) where the streamer is already shouting or hyped: the voice is
+  the hype; a sound there just covers it
+- fewer is better: if nothing needs a sound, return []
+- vol is 0.3 to 0.6
+Sounds that work: vine boom, bruh, emotional damage, dun dun dun, metal pipe, record scratch, sad violin, anime wow.
+Return a JSON array, e.g. [{{"offset": <seconds>, "search": "<sound>", "vol": 0.5}}]
 """
                     out, _, _ = brain_mod.ask_ai(prompt, purpose="Clip SFX suggestion", timeout=12)
+                    if isinstance(out, list) and not out:
+                        return []           # the AI found nothing that needs a sound: none is better than a random one
                     if isinstance(out, list) and len(out) > 0:
                         chosen = []
                         for item in out[:2]:
@@ -405,7 +479,7 @@ Return a JSON array of objects:
                                 q = str(item.get("search") or item.get("hook") or "vine boom")
                                 s_item = find_sound(q)
                                 if s_item:
-                                    vol = max(0.2, min(1.5, float(item.get("vol") or 0.7)))
+                                    vol = max(0.2, min(0.8, float(item.get("vol") or 0.5)))
                                     chosen.append({
                                         "time": round(offset, 2),
                                         "name": s_item["name"],
@@ -422,6 +496,7 @@ Return a JSON array of objects:
                                         "url": w_item["url"],
                                         "vol": 0.45,
                                     })
+                            chosen = calm_spots(chosen, src, start, dur)
                             for s in chosen:
                                 ensure_cached(s["url"], s["name"])
                             return chosen
@@ -473,11 +548,10 @@ Return a JSON array of objects:
             "time": punch_t,
             "name": punch_item["name"],
             "url": punch_item["url"],
-            "vol": 0.7,
+            "vol": 0.5,
         })
 
-    # Ensure all chosen items are cached
+    chosen = calm_spots(chosen, src, start, dur)
     for s in chosen:
         ensure_cached(s["url"], s["name"])
-
     return chosen

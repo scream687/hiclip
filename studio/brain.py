@@ -56,9 +56,11 @@ Most checks should return []. Only return a moment you would stop scrolling for.
 RULES = """
 Rules:
 - Each clip is {min_len} to {max_len} seconds. Use the [seconds] values for start and end.
-- Every clip is setup -> peak -> reaction. Start 3 to 8 seconds BEFORE the moment, on the line that tells a
+- Every clip is setup -> peak -> reaction. Start 5 to 15 seconds BEFORE the moment, on the line that tells a
   stranger what is going on (what the streamer is trying to do, who they are talking to, what just appeared),
-  not mid-sentence. The peak is the shout, the laugh, the fail, the clutch, the chat going wild: a (LOUD) or
+  not mid-sentence. A stranger who never saw the video must understand the clip from its first line: if the
+  peak only makes sense because of something said earlier (a challenge, a bet, a myth being tested, a plan),
+  start where that is said, even if the clip gets longer. The peak is the shout, the laugh, the fail, the clutch, the chat going wild: a (LOUD) or
   (CHAT) line is usually inside it. End right after the reaction, on the last word of a complete sentence;
   never trail on into small talk. The first 2 seconds must already pull the viewer in: no greetings, no
   "okay so", no silence.

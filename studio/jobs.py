@@ -108,7 +108,7 @@ _by_user: dict = {}                       # user -> {job id: job}: listing one p
 _lock = threading.RLock()
 on_clip_ready: list = []   # callbacks (job, clip), run once when a clip first finishes
 
-DEFAULTS = {"max_clips": 6, "min_len": 15, "max_len": 60, "style": "punch", "layout": "band", "quality": 720,
+DEFAULTS = {"max_clips": 6, "min_len": 20, "max_len": 60, "style": "punch", "layout": "band", "quality": 720,
             "range_start": None, "range_end": None, "captions": True, "hinglish": False, "sfx": True, "fx": True, "watermark": "",
             "live_minutes": 30, "watch_live": True}
 
@@ -472,7 +472,8 @@ def render_one(job, clip, words):
         if (job.get("options") or {}).get("sfx", True) and "sfx" not in clip:
             try:
                 from . import sfx as sfx_mod
-                clip["sfx"] = sfx_mod.suggest_for_clip(clip, near, game=job.get("game"), title=job.get("title"))
+                clip["sfx"] = sfx_mod.suggest_for_clip(clip, near, game=job.get("game"), title=job.get("title"),
+                                                       src=src if not off else None)
                 local["sfx"] = clip["sfx"]
             except Exception:  # noqa: BLE001
                 pass

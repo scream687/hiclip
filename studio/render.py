@@ -468,9 +468,10 @@ def _render_in(work: Path, src: Path, out_dir: Path, name: str, start, end, layo
         af_parts = [
             f"[0:a:0]{trim_a},aresample=48000,aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo[a0];"
         ]
+        voice = sfx_mod.loudness(src, start, end - start)      # meme sounds are levelled against this clip's voice
         for idx, item in enumerate(valid_sfx):
             t_ms = int(max(0.0, float(item.get("time", 0.0))) * 1000)
-            vol = max(0.05, min(2.5, float(item.get("vol", 0.7))))
+            vol = sfx_mod.gain_for(work / f"sfx_{idx}.mp3", voice, max(0.0, min(1.5, float(item.get("vol", 0.5)))))
             af_parts.append(
                 f"[{idx + first}:a]aresample=48000,aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo,"
                 f"volume={vol:.2f},adelay={t_ms}|{t_ms}[sfx{idx + 1}];"

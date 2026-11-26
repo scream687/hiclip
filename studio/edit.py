@@ -228,7 +228,7 @@ def _cover(chain: str, out: str, clean_h) -> list:
             f"[{out}a][{out}c]overlay=0:{clean_h}[{out}]"]
 
 
-def graphs(dur, fps, pl, fx, cam, inputs, clean_h=None) -> tuple:
+def graphs(dur, fps, pl, fx, cam, inputs, clean_h=None, gains=None) -> tuple:
     """(video graph, audio graph, total length). `inputs` maps 'emoji','glitch','boom','static','music' to input
     numbers when present. Video ends in [vout], audio in [amix] (loudness is applied after)."""
     P, finale = pl["payoff"], pl["finale"]
@@ -300,18 +300,18 @@ def graphs(dur, fps, pl, fx, cam, inputs, clean_h=None) -> tuple:
         v.append("".join(f"[{s}]" for s, _ in segs) + f"concat=n={n}:v=1:a=0[vout]")
         a.append("".join(f"[{x}]" for _, x in segs) + f"concat=n={n}:v=0:a=1[acat]")
     # one-shot sounds over the edit
-    hits = []
+    hits, g = [], gains or {}
     if finale and inputs.get("glitch") is not None:
-        hits.append((inputs["glitch"], P, 0.6))
+        hits.append((inputs["glitch"], P, g.get("glitch", 0.6)))
     if pl["boom"] and inputs.get("boom") is not None:
-        hits.append((inputs["boom"], P + (GLITCH if finale else 0.0), 0.8))
+        hits.append((inputs["boom"], P + (GLITCH if finale else 0.0), g.get("boom", 0.8)))
     for k, (idx, t, vol) in enumerate(hits):
         ms = int(t * 1000)
-        a.append(f"[{idx}:a]volume={vol},adelay={ms}|{ms},{_a(f'h{k}')}")
+        a.append(f"[{idx}:a]volume={vol:.4f},adelay={ms}|{ms},{_a(f'h{k}')}")
     mix_in = "[acat]" + "".join(f"[h{k}]" for k in range(len(hits)))
     if inputs.get("music") is not None:
         a.append(f"{mix_in}amix=inputs={len(hits) + 1}:normalize=0:duration=first,asplit=2[voice][sc]")
-        a.append(f"[{inputs['music']}:a]atrim=start=0:end={total:.3f},asetpts=PTS-STARTPTS,volume={MUSIC_VOL},"
+        a.append(f"[{inputs['music']}:a]atrim=start=0:end={total:.3f},asetpts=PTS-STARTPTS,volume={g.get('music', MUSIC_VOL):.4f},"
                  f"afade=t=out:st={max(0.0, total - 0.8):.3f}:d=0.8,{_a('bed')}")
         a.append("[bed][sc]sidechaincompress=threshold=0.03:ratio=8:attack=15:release=350[duck]")
         a.append("[voice][duck]amix=inputs=2:normalize=0:duration=first[amix]")
@@ -338,14 +338,14 @@ def finish(work: Path, name: str, fps: int, fx: dict, cam=None, category: str = 
     p_guess = payoff(db, dur)
     dark = True if mood_text is None else is_dark(mood_text)
     pl = plan(dur, db, fx, has_audio_hit=any(abs(t - p_guess) < 1.0 for t in sfx_times), stops=stops, dark=dark)
-    inputs, args, n = {}, ["-i", src.name], 1
+    inputs, paths, args, n = {}, {}, ["-i", src.name], 1
     cat = (category or "").lower()
 
     def add(key, extra, path):
         nonlocal n
         if path:
             args.extend([*extra, "-i", path])
-            inputs[key] = n
+            inputs[key], paths[key] = n, path
             n += 1
 
     if pl["finale"] and fx.get("emoji"):
@@ -359,7 +359,12 @@ def finish(work: Path, name: str, fps: int, fx: dict, cam=None, category: str = 
     if fx.get("music"):
         m = _sound(MUSIC.get(cat, "phonk"), work, "music")
         add("music", ["-stream_loop", "-1"], m)
-    vg, ag, total = graphs(dur, fps, pl, fx, cam, inputs, clean_h)
+    # every added sound is levelled against this clip's voice (MyInstants files are mastered very loud)
+    from . import sfx as sfx_mod
+    voice = sfx_mod.loudness(work / src.name)
+    rel = {"glitch": 0.45, "boom": 0.55, "music": 0.3}    # vol 1.0 = 6 dB under the voice; music sits ~16 dB under
+    gains = {k: sfx_mod.gain_for(work / paths[k], voice, rel[k]) for k in inputs if k in rel}
+    vg, ag, total = graphs(dur, fps, pl, fx, cam, inputs, clean_h, gains)
     m = _measure(args, ag, work)
     ln = (f"loudnorm=I={LUFS}:TP={TP}:LRA={LRA}:measured_I={m['input_i']}:measured_TP={m['input_tp']}:"
           f"measured_LRA={m['input_lra']}:measured_thresh={m['input_thresh']}:offset={m['target_offset']}:linear=true")

@@ -136,6 +136,18 @@ c = _crowd(story, _broken)
 check("with no AI the clip still ends on a whole sentence", any(abs(c["end"] - e) < 0.4 for e in ends), True)
 check("and starts at the start of a line", any(abs(c["start"] + 0.15 - w["s"]) < 0.01 for w in story), True)
 
+# ---- a Hindi chat means a Hindi-speaking streamer: speech switches to Hindi by itself
+def _chat_lang(lines):
+    s = _session("GTA 6 DAY 3")
+    s.job["options"] = {"hinglish": False}
+    for i in range(120):
+        s._on_chat(lines[i % len(lines)], f"p{i}")
+    return s.job["options"]["hinglish"]
+check("a Hinglish chat switches speech to Hindi", _chat_lang(["snax chicha kya game hai ye", "oven hai bhai", "pure baby pure",
+                                                              "log ko loot ke SMG lo", "gang signs chicha"]), True)
+check("an English chat does not", _chat_lang(["kai surrender now", "reload the game", "gg on tha chat", "frew hai rrrr",
+                                              "lets go kai", "who is this guy"]), False)
+
 # ---- a slow AI answer must not stop the recording
 import time as _time
 s = _session("morning everyone")

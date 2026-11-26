@@ -20,7 +20,8 @@ def check(name, condition):
 
 
 def has_dialogue(ass, style, text=""):
-    return any(line.startswith("Dialogue: ") and f",{style}," in line and text in line
+    styles = (f",{style},", ",HookRed,") if style == "Hook" else (f",{style},",)   # either heading look
+    return any(line.startswith("Dialogue: ") and any(x in line for x in styles) and text in line
                for line in ass.splitlines())
 
 

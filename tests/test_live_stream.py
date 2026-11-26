@@ -140,7 +140,7 @@ segment102.ts
             brain.judge_transcript = orig
 
     def test_post_text_has_alternatives_seo_tags_and_a_paragraph_break(self):
-        from studio import brain, posting
+        from studio import brain, campaign
         c = brain._tidy({"score": 80, "hook": "move", "title": "IShowSpeed Can't Handle This GTA 6 Chase 😂",
                          "description": "The chase slows down 😂\n\nWatch more IShowSpeed GTA 6 gameplay!",
                          "hashtags": ["IShowSpeed", "GTA6"], "alt_titles": ["One", "Two", "Three", "Four", "Five"],
@@ -148,9 +148,9 @@ segment102.ts
         self.assertEqual(c["alt_titles"], ["One", "Two", "Three", "Four"])
         self.assertEqual(c["seo_tags"], ["ishowspeed gta 6", "gta 6"])
         self.assertIn("\n\nWatch more", c["description"])
-        text = posting._caption(c, {"post_footer": ""}, shorts=True)
+        text = campaign.post_text(c, {"post_footer": ""}, "youtube", with_title=False)
         self.assertTrue(text.endswith("#IShowSpeed #GTA6 #Shorts"), text)
-        self.assertNotIn("#Shorts", posting._caption(c, {"post_footer": ""}))
+        self.assertNotIn("#Shorts", campaign.post_text(c, {"post_footer": ""}, "tiktok"))
 
     def test_clips_from_the_first_grab_are_not_cut_to_the_live_recording_length(self):
         """A live job's duration becomes the recording's running length; a clip found 860 s into the 15-minute first

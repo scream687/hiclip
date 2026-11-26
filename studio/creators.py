@@ -14,13 +14,14 @@ def _root() -> Path:
 
 _lock = threading.RLock()
 
-DEFAULTS = {"name": "", "channel": "", "style": "bounce", "layout": "blur", "captions": True, "hinglish": False, "sfx": True, "min_len": 15, "max_len": 60,
+DEFAULTS = {"name": "", "channel": "", "style": "punch", "layout": "band", "captions": True, "hinglish": False, "sfx": True, "min_len": 15, "max_len": 60,
             "max_clips": 6, "min_score": 80, "auto_watch": False, "buffer_min": 20, "live_per_hour": 0, "ai_every_min": 3, "ai_only_on_spike": True, "auto_jump_pct": 60,
             "plan": "free", "decide_mode": "both", "must_clip_min": 0, "min_gap_min": 2,
             "game": "",
             "trigger_words": "clip that, clip it",
             "autopost": False, "accounts": [], "post_min_score": 75, "post_gap_min": 45, "daily_cap": 6,
-            "privacy": "public", "post_footer": "", "rate_per_1k": 0.0, "channels": {}}
+            "privacy": "public", "post_footer": "", "rate_per_1k": 0.0, "channels": {},
+            "campaign_name": "", "campaign_brief": "", "campaign_tags": {}}
 PLATFORMS = ("youtube", "twitch", "kick")
 
 
@@ -70,6 +71,12 @@ def _clean(data: dict) -> dict:
             v = bool(v)
         elif k == "channels":
             v = {p: str(u).strip()[:300] for p, u in (v.items() if isinstance(v, dict) else []) if p in PLATFORMS and str(u).strip()}
+        elif k == "campaign_brief":
+            from .campaign import clean_brief
+            v = clean_brief(v)
+        elif k == "campaign_tags":
+            from .campaign import POST_PLATFORMS, handle
+            v = {p: handle(t) for p, t in (v.items() if isinstance(v, dict) else []) if p in POST_PLATFORMS and handle(t)}
         elif k == "accounts":
             v = [str(x) for x in v][:20] if isinstance(v, list) else []
         elif k == "rate_per_1k":

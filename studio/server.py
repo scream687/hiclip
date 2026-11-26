@@ -23,7 +23,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Redirect
 
 from . import admin as admins
 from . import account, load
-from . import (accounts, ai, alerts, auth, config, creators, ctx, db, jobs, live, media, posting,
+from . import (accounts, ai, alerts, auth, config, creators, ctx, db, edit, jobs, live, media, posting,
                profiles, render, safe, sfx, transcribe, usage)
 
 from . import tools as _tools  # noqa: E402
@@ -609,7 +609,8 @@ def status(request: Request):
     return {"user": auth.public(me_), "update": updates.latest() if me_.is_admin else None, "accounts": config.ACCOUNTS, "disk_full": load.disk_full(), "no_ffmpeg": bool(_tools.missing()), "links": {"repo": config.REPO_URL, "follow": config.FOLLOW_URL}, "ai": usage.brief(), "unread": notices.unread(),
             "tour": not accounts.settings()["tour_done"],
             "youtube": accounts.youtube_ready(), "connect": {p: accounts.can_connect(p) for p in accounts.PLATFORM_NAMES}, "max_upload_mb": config.MAX_UPLOAD_MB, "upload_part_mb": config.UPLOAD_PART_MB, "max_batch": config.MAX_ACTIVE_JOBS_PER_USER,
-            "styles": {k: v["label"] for k, v in render.STYLES.items()}, "layouts": render.LAYOUTS}
+            "styles": {k: v["label"] for k, v in render.STYLES.items()}, "layouts": render.LAYOUTS,
+            "hook_styles": render.HOOK_STYLES, "fx_keys": list(edit.FX_KEYS)}
 
 
 # ================================================================ videos
@@ -1029,6 +1030,21 @@ def sfx_audio(url: str):
     if not path or not path.exists():
         raise HTTPException(404, "Sound not found")
     return FileResponse(path, media_type="audio/mpeg", headers={"Cache-Control": "public, max-age=86400"})
+
+
+@app.get("/api/jobs/{jid}/clips/{cid}/post-text")
+def clip_post_text(jid: str, cid: str, platform: str = "tiktok"):
+    """What a post of this clip says on one platform, campaign @name first (for the copy buttons)."""
+    from . import campaign
+    job = _job_or_404(jid)
+    clip = next((c for c in job["clips"] if c["id"] == cid), None)
+    if not clip:
+        raise HTTPException(404, "No such clip")
+    if platform not in campaign.POST_PLATFORMS:
+        raise HTTPException(400, "Unknown platform")
+    creator = creators.get(job.get("creator")) if job.get("creator") else None
+    creator = creator or dict(creators.DEFAULTS)
+    return {"text": campaign.post_text(clip, creator, platform), "tags": campaign.tags_for(creator)}
 
 
 @app.post("/api/jobs/{jid}/clips/{cid}/sfx/suggest")

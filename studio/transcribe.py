@@ -304,6 +304,54 @@ def _whisper(audio: np.ndarray) -> list | None:
             for seg in got.get("segments", []) for w in seg.get("words", []) if w["word"].strip()]
 
 
+DETECT_SEC = 30      # Whisper hears speech in 30-second windows
+DETECT_WINDOWS = 4   # how many windows of speech it hears to tell the language
+HINDI_P = 0.10       # Hinglish is mostly heard as English: some Hindi in any window means Hindi
+
+
+def detect_lang(audio: np.ndarray) -> str:
+    """The language spoken ("en", "hi"...), from up to DETECT_WINDOWS windows of speech taken from the middle of the
+    audio on (openings are often music or silence). "" when it cannot be told here: no Whisper on this machine, or
+    almost nobody talking."""
+    global _whisper_missing
+    if _whisper_missing:
+        return ""
+    voiced, mid, need = [], len(audio) // 3, DETECT_SEC * DETECT_WINDOWS * 16000
+    for part in (audio[mid:], audio[:mid]):
+        for a, b in _chunks(part):
+            seg = part[a:b]
+            if len(seg) >= 4800 and float(np.sqrt((seg.astype(np.float32) ** 2).mean())) / 32768.0 >= 0.003:
+                voiced.append(seg)
+            if sum(len(v) for v in voiced) >= need:
+                break
+        if sum(len(v) for v in voiced) >= need:
+            break
+    speech = np.concatenate(voiced)[:need].astype(np.float32) / 32768.0 if voiced else np.zeros(0, np.float32)
+    if len(speech) < 8 * 16000:
+        return ""
+    try:
+        import mlx.core as mx
+        from mlx_whisper.audio import log_mel_spectrogram, pad_or_trim
+        from mlx_whisper.decoding import detect_language
+        from mlx_whisper.transcribe import ModelHolder
+        with _whisper_lock:
+            model = ModelHolder.get_model(WHISPER_MODEL, mx.float16)
+            total, hindi = {}, 0.0
+            for k in range(0, max(1, len(speech) - 8 * 16000), DETECT_SEC * 16000):
+                mel = log_mel_spectrogram(pad_or_trim(speech[k:k + DETECT_SEC * 16000]), n_mels=model.dims.n_mels)
+                _, probs = detect_language(model, mel.astype(mx.float16))
+                hindi = max(hindi, probs.get("hi", 0) + probs.get("ur", 0))
+                for lang, pr in probs.items():
+                    total[lang] = total.get(lang, 0) + pr
+        return "hi" if hindi >= HINDI_P else max(total, key=total.get)
+    except ImportError:
+        _whisper_missing = True
+        return ""
+    except Exception as e:  # noqa: BLE001 - not knowing the language only means the setting is used as it was
+        print(f"  Language check failed ({str(e)[:120]}); the creator's setting is used.", flush=True)
+        return ""
+
+
 def transcribe(audio: np.ndarray, on_progress=None, lang: str = "") -> list:
     if (lang or "").lower().startswith(("hi", "ur")):
         heard = _whisper(audio)

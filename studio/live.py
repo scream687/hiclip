@@ -36,14 +36,15 @@ SR = 16000
 HYPE_WORDS = [(label, re.compile(rx, re.I)) for label, rx in [
     ("W", r"(?<![\w'/])w+(?![\w'/])"), ("GG", r"\bg+gs?\b"), ("LET'S GO", r"\blet'?s+\s*go+\b|\blfg+\b"),
     ("NO WAY", r"\bno+\s*wa+y+\b(?!\s+out)"), ("OMG", r"\bomg+\b|\boh my god\b"), ("SHEESH", r"\bshe+sh\b"),
-    ("POG", r"\bpog\w*\b"), ("CLIP IT", r"\bclip\s*(it|that)\b"), ("HOLY", r"\bholy\b"), ("I WAS HERE", r"\bi\s*was\s*here\b"),
+    ("POG", r"\bpog\w*\b"), ("CLIP IT", r"\bclip\s*(it|that)\b"), ("HOLY", r"\bholy\b"), ("FAH", r"\bfa+h+\b"), ("I WAS HERE", r"\bi\s*was\s*here\b"),
     ("OHHH", r"\bo+h{3,}\b|\bo{3,}h*\b|\bou+\b"), ("NOOO", r"\bno{3,}\b"), ("RIP", r"\brip\b"),
     ("L", r"(?<![\w'/])l+(?![\w'/])"),
     ("LMAO", r"\blma+o+\b|\blo+l+\b|\bkekw\b|\blul\b|\bicant\b|\b(ha){2,}h?\b|\bxd+\b"
              r"|\bj[aeiou](j[aeiou]){2,}\b|\bk{4,}\b|ه{3,}|哈{2,}|ㅋ{3,}"),  # haha, jajaja, kkkk, هههه, 哈哈, ㅋㅋㅋ
     ("LET'S GO", r"\bvamo+s?\b|\bbora+\b|\ballez\b|\bandiamo\b|\bchal+o+\b"),
     ("INSANE", r"\binsane\b|\bcrazy\b|\bwild\b|\bwtf\b|\bbro what\b|\bwhat the\b"),
-    ("CINEMA", r"\bcinema\b|\bgoated\b|🐐|\bop\b|\bhype+\b"),  # not "goat", "fire", "peak": ordinary words too ("🔥", r"🔥"), ("😂", r"😂|🤣"),
+    ("CINEMA", r"\bcinema\b|\bgoated\b|🐐|\bop\b|\bhype+\b"),
+    ("KYA BAAT", r"\bkya\s*baat\b|\bgaza+b\b|\bjhakaa+s\b|\bbawaa*l\b|\bmast\b|\bbhaukaal\b|\bwa+h+\b|वाह|गज़ब|गजब"),  # not "goat", "fire", "peak": ordinary words too ("🔥", r"🔥"), ("😂", r"😂|🤣"),
     ("💀", r"💀|☠|🥀"), ("😭", r"😭"), ("😱", r"😱|😮|🤯|😳")]]
 
 
@@ -55,6 +56,22 @@ def _get_json(url: str, body: bytes | None = None) -> str:
     if body:
         hdr["Content-Type"] = "application/json"
     return urllib.request.urlopen(urllib.request.Request(url, body, hdr), timeout=20).read().decode("utf-8", "replace")
+
+
+def _emoji_text(e: dict) -> str:
+    """A chat emoji as text: the character itself, or a channel's own emote by its name (":snaxHype:"), not its id."""
+    if e.get("isCustomEmoji"):
+        return (e.get("shortcuts") or [""])[0]
+    return e.get("emojiId") or ""
+
+
+# Hindi or Hinglish in chat: Devanagari, or the small words Hinglish can't do without. A stream whose chat is
+# this Hindi has a streamer speaking it, which the speech models can't be trusted to tell (Whisper hears Hinglish
+# as English, and the English model spells it as nonsense).
+HINDI_CHAT = re.compile(r"[\u0900-\u097F]|\b(hai|hain|kya|kyu|kyun|nahi|nhi|bhai|bhi|yaar|yrr|karo|raha|rahi|rahe|"
+                        r"mein|toh|hoga|kaise|accha|acha|bahut|bohot|apna|tera|mera|aaj|abhi|dekh|haan|wala|wali)\b",
+                        re.I)
+CHAT_LANG_AFTER, CHAT_HINDI_SHARE = 100, 0.2   # messages read before deciding; share of them that means Hindi
 
 
 def hype_label(text: str) -> str | None:
@@ -174,6 +191,7 @@ class Session:
         self.hype = collections.Counter()    # second -> hype messages (W, GG, LET'S GO, 🔥...)
         self.hype_said = collections.deque(maxlen=20000)   # (second, label), for the words chat is hyping with
         self.hype_users = {}                 # second -> who hyped then: one person spamming W counts once
+        self.lang_seen = self.lang_hindi = 0    # chat messages of two words or more, and how many were Hindi
         self.hype_kept = 0
         self.last_check = 0.0
         self.words_at_check = 0
@@ -469,7 +487,7 @@ class Session:
                             r = act.get("addChatItemAction", {}).get("item", {}).get("liveChatTextMessageRenderer")
                             if not r:
                                 continue
-                            text = "".join(x.get("text") or ((x.get("emoji") or {}).get("emojiId") or "")
+                            text = "".join(x.get("text") or _emoji_text(x.get("emoji") or {})
                                            for x in r.get("message", {}).get("runs", []))
                             if text.strip().startswith("!"):   # bot commands (!giveaway): a raffle, not hype
                                 continue
@@ -735,8 +753,8 @@ class Session:
 
     def _add_clip(self, c):
         self.n += 1
-        c.update(id=f"clip{self.n:03d}", style=self.settings.get("style", "bounce"),
-                 layout=self.settings.get("layout", "blur"),
+        c.update(id=f"clip{self.n:03d}", style=self.settings.get("style", "punch"),
+                 layout=self.settings.get("layout", "band"),
                  captions=self.job.get("options", {}).get("captions", True),
                  hinglish=self.job.get("options", {}).get("hinglish", False),
                  status="queued", version=0, made_at=time.time())
@@ -846,6 +864,22 @@ class Session:
             self.chat[second] += 1
             self.chat_total += 1
             self._count_hype(second, text, who.lower())
+            self._chat_language(text)
+
+    def _chat_language(self, text: str):
+        """Once enough chat has been read: a Hindi chat switches this recording's speech to Hindi (Whisper), so what
+        the streamer says is heard. Only ever switches on; the creator's own setting wins when it is on already.
+        Called under the lock."""
+        if self.lang_seen > CHAT_LANG_AFTER or len(text.split()) < 2:
+            return
+        self.lang_seen += 1
+        self.lang_hindi += bool(HINDI_CHAT.search(text))
+        opts = self.job.setdefault("options", {})
+        if self.lang_seen == CHAT_LANG_AFTER and not opts.get("hinglish") and self.lang_hindi >= CHAT_HINDI_SHARE * CHAT_LANG_AFTER:
+            opts["hinglish"] = True
+            self.job["lang_auto"] = "hi"
+            if self.job.get("creator"):
+                creators.log(self.job["creator"], f"Chat is {self.lang_hindi}% Hindi: listening for Hindi speech")
 
     def _count_hype(self, second: int, text: str, who: str = ""):
         """Count one chat message as hype when it is, once per person per second. Called under the lock, from the
@@ -1026,8 +1060,8 @@ def start_session(creator: dict, url=None) -> dict:
     if tools.missing():
         raise ValueError(tools.HELP)
     opts = {
-        "style": creator.get("style", "bounce"),
-        "layout": creator.get("layout", "blur"),
+        "style": creator.get("style", "punch"),
+        "layout": creator.get("layout", "band"),
         "captions": creator.get("captions", True),
         "hinglish": creator.get("hinglish", False),
         "min_len": creator.get("min_len", 15),

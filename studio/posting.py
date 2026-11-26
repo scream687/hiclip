@@ -6,7 +6,7 @@ from pathlib import Path
 
 import json
 
-from . import accounts, alerts, config, creators, ctx, jobs, live
+from . import accounts, alerts, campaign, config, creators, ctx, jobs, live
 
 _lock = threading.RLock()
 _FILE = config.DATA_DIR / "posts.json"
@@ -100,13 +100,6 @@ def on_clip_ready(job, clip):
         creators.log(c["id"], f"Queued for {len(made)} account(s): {clip.get('title') or clip.get('hook')}")
 
 
-def _caption(clip, creator, shorts=False):
-    """Description (the AI's ends with a "Watch more ..." line), then one line of hashtags (#Shorts last on YouTube)."""
-    have = clip.get("hashtags", [])
-    tags = " ".join("#" + h for h in have + (["Shorts"] if shorts and "shorts" not in {h.lower() for h in have} else []))
-    return "\n\n".join(x for x in (clip.get("description", ""), tags, creator.get("post_footer", "")) if x)
-
-
 def _post(p):
     job = jobs.get(p["job"])
     clip = next((c for c in job["clips"] if c["id"] == p["clip"]), None) if job else None
@@ -118,14 +111,15 @@ def _post(p):
             raise RuntimeError("That account was disconnected.")
         path = Path(job["dir"]) / "clips" / clip["file"]
         creator = creators.get(job["creator"]) or dict(creators.DEFAULTS, name="clips")
-        title, cap = clip.get("title") or clip.get("hook") or "Clip", _caption(clip, creator)
+        title = clip.get("title") or clip.get("hook") or "Clip"
+        text = campaign.post_text(clip, creator, acc["platform"], with_title=acc["platform"] != "youtube")
         if acc["platform"] == "youtube":
-            rid, url = accounts.youtube_upload(acc, path, title, _caption(clip, creator, shorts=True),
+            rid, url = accounts.youtube_upload(acc, path, title, text,
                                                clip.get("seo_tags") or clip.get("hashtags", []), creator["privacy"])
         elif acc["platform"] == "instagram":
-            rid, url = accounts.instagram_upload(acc, path, f"{title}\n\n{cap}", job["id"])
+            rid, url = accounts.instagram_upload(acc, path, text, job["id"])
         elif acc["platform"] == "tiktok":
-            rid, url = accounts.tiktok_upload(acc, path, f"{title}\n\n{cap}", creator["privacy"])
+            rid, url = accounts.tiktok_upload(acc, path, text, creator["privacy"])
         else:
             raise RuntimeError("That kind of account is no longer supported.")
         p.update(status="posted", posted_at=time.time(), remote_id=rid, url=url, error=None)

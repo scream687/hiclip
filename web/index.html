@@ -394,6 +394,8 @@ img.av{object-fit:cover}
 .lay-prev .ph::before{content:"";position:absolute;inset:0;background:linear-gradient(160deg,#B4643A,#5E3A2A);filter:blur(3px);opacity:.75}
 .lay-prev .ph i{position:absolute;left:0;right:0;top:50%;transform:translateY(-50%);height:16px;background:linear-gradient(135deg,#FF8B33,#FFB27A)}
 .lay-prev.zoom .ph i{left:-6px;right:-6px;height:24px}
+.lay-prev.band .ph i{left:-6px;right:-6px;height:24px;top:42%}
+.lay-prev.band .ph i::after{content:"";position:absolute;left:0;top:0;width:9px;height:7px;background:#F7F2EE}
 .lay-prev.crop .ph i{left:0;right:0;top:0;height:100%;transform:none}
 .lay-prev.stack .ph i{top:auto;bottom:0;height:62%;transform:none}
 .lay-prev.stack .ph::after{content:"";position:absolute;left:0;right:0;top:0;height:38%;background:#E8C4A8}
@@ -1065,6 +1067,7 @@ const S = {status:{styles:{}, layouts:{}}, jobs:[], creators:[], accounts:[], ov
 const D = {jid:null, cid:null, sig:""};
 const creatorId = () => S.view.startsWith("c:") ? S.view.slice(2) : null;
 const creator = () => S.creators.find(c => c.id === creatorId());
+const campaignOf = j => { const c = j && S.creators.find(x => x.id === j.creator); return c && (c.campaign_brief || Object.keys(c.campaign_tags || {}).length) ? c : null; };
 const jobOf = id => S.jobs.find(j => j.id === id);
 
 /* ============================================================ shell */
@@ -1388,10 +1391,12 @@ function drawAdd(variant) {
       </div></div>
       <div class="ob"><div class="ot cap-head"><span id="o_style_label">Caption style</span>
         <label><input type="checkbox" id="o_captions" data-caption-toggle ${c?.captions === false ? "" : "checked"}>Generate captions</label></div>
-        ${choice("o_style", Object.entries(S.status.styles).map(([k, v]) => ({v:k, label:v, prev:capPrev(k)})), c?.style ?? "bounce", c?.captions === false)}
+        ${choice("o_style", Object.entries(S.status.styles).map(([k, v]) => ({v:k, label:v, prev:capPrev(k)})), c?.style ?? "punch", c?.captions === false)}
         <label class="sw" style="margin-top:8px"><input type="checkbox" id="o_hinglish" ${c?.hinglish ? "checked" : ""}>English + Hinglish captions <small style="color:var(--dim)">(Mixed Roman Hindi/Urdu)</small></label>
-        <label class="sw" style="margin-top:8px"><input type="checkbox" id="o_sfx" ${c?.sfx !== false ? "checked" : ""}>Meme sounds & SFX <small style="color:var(--dim)">(MyInstants audio effects)</small></label></div>
-      <div class="ob"><div class="ot">Layout</div>${choice("o_layout", Object.entries(S.status.layouts).map(([k, v]) => ({v:k, label:LAYOUT_SHORT[k] || v, title:v, prev:`<span class="lay-prev ${esc(k)}"><span class="ph"><i></i></span></span>`})), c?.layout ?? "blur")}</div>
+        <label class="sw" style="margin-top:8px"><input type="checkbox" id="o_sfx" ${c?.sfx !== false ? "checked" : ""}>Meme sounds & SFX <small style="color:var(--dim)">(MyInstants audio effects)</small></label>
+        <label class="sw" style="margin-top:8px"><input type="checkbox" id="o_fx" ${c?.fx !== false ? "checked" : ""}>Creator edits <small style="color:var(--dim)">(zooms, reaction ending, music)</small></label>
+        <label class="f" style="margin-top:8px">Channel tag <small style="color:var(--dim)">(optional, top-left on every clip)</small><input id="o_watermark" maxlength="30" placeholder="/YourChannel" value="${esc(c?.watermark || "")}"></label></div>
+      <div class="ob"><div class="ot">Layout</div>${choice("o_layout", Object.entries(S.status.layouts).map(([k, v]) => ({v:k, label:LAYOUT_SHORT[k] || v, title:v, prev:`<span class="lay-prev ${esc(k)}"><span class="ph"><i></i></span></span>`})), c?.layout ?? "band")}</div>
       <div class="ob"><div class="ot">Video quality</div><input type="hidden" id="o_quality" value="720"><div class="seg" role="group" aria-label="Video quality">
         <button type="button" data-seg="o_quality" data-v="720" aria-pressed="true">720p<small>Fast</small></button>
         <button type="button" data-seg="o_quality" data-v="1080" aria-pressed="false">1080p<small>Sharper, about 2x slower</small></button></div></div>
@@ -1405,7 +1410,8 @@ function drawAdd(variant) {
     </div></div></form>`;
   drawAtt();
 }
-const LAYOUT_SHORT = {blur:"Blurred fill", zoom:"Zoomed in", crop:"Fill screen", gameplay:"Gameplay + facecam", stack:"Facecam top, game below"};
+const LAYOUT_SHORT = {blur:"Blurred fill", zoom:"Zoomed in", crop:"Fill screen", gameplay:"Gameplay + facecam", stack:"Facecam top, game below", band:"Creator band + facecam"};
+const FX_LABELS = {punch:"Punch-in zooms", finale:"Reaction ending, dark or creepy clips only (glitch, B&W, replay)", outro:"TV-bars outro (with the reaction ending)", music:"Music bed (MyInstants)", emoji:"Emoji on the ending"};
 const CAP_LOOK = {bounce:{font:"'Archivo Black'", hl:"#FFFF00", up:true}, hype:{font:"Anton", hl:"#FF3C3C", up:true}, clean:{font:"Poppins", hl:"#6BD7FF", up:false, w:800}};
 function capPrev(k) {
   const s = CAP_LOOK[k] || {font:"inherit", hl:"#FF8B33", up:true};
@@ -1461,7 +1467,7 @@ document.addEventListener("keydown", e => {
 const targetCreator = () => creatorId() || $("#o_creator")?.value || "";
 function jobOptions() {
   const n = id => { const el = $(id); return (!el || el.value === "") ? null : Number(el.value); };
-  const o = {max_clips:n("#o_max"), min_len:n("#o_min"), max_len:n("#o_maxlen"), captions:$("#o_captions") ? $("#o_captions").checked : true, hinglish:$("#o_hinglish") ? $("#o_hinglish").checked : false, sfx:$("#o_sfx") ? $("#o_sfx").checked : true, live_minutes:n("#o_live_min") ?? 30, watch_live:$("#o_watch_live") ? $("#o_watch_live").checked : true, style:$("#o_style")?.value || "bounce", layout:$("#o_layout")?.value || "blur", quality:n("#o_quality") ?? 720};
+  const o = {max_clips:n("#o_max"), min_len:n("#o_min"), max_len:n("#o_maxlen"), captions:$("#o_captions") ? $("#o_captions").checked : true, hinglish:$("#o_hinglish") ? $("#o_hinglish").checked : false, sfx:$("#o_sfx") ? $("#o_sfx").checked : true, fx:$("#o_fx") ? $("#o_fx").checked : true, watermark:$("#o_watermark")?.value || "", live_minutes:n("#o_live_min") ?? 30, watch_live:$("#o_watch_live") ? $("#o_watch_live").checked : true, style:$("#o_style")?.value || "punch", layout:$("#o_layout")?.value || "band", quality:n("#o_quality") ?? 720};
   if (n("#o_from") !== null) o.range_start = n("#o_from") * 60;
   if (n("#o_to") !== null) o.range_end = n("#o_to") * 60;
   return o;
@@ -1577,7 +1583,7 @@ function onLink(input) {
   linkTimer = setTimeout(() => { if (input.value.trim() === u) takeLink(A, u, input); }, 900);   // other link shapes: take it once typing stops
 }
 document.addEventListener("input", e => { if (e.target.id === "url") onLink(e.target);
-  if (e.target.closest?.("#cform") && e.target.dataset.k && !/checkbox|radio/.test(e.target.type)) dirty(true); });
+  if (e.target.closest?.("#cform") && (e.target.dataset.k || e.target.dataset.ct) && !/checkbox|radio/.test(e.target.type)) dirty(true); });
 document.addEventListener("keydown", e => { if (e.target.id === "url" && e.key === "Enter" && e.target.value.trim() && looksLink(e.target.value.trim())) { e.preventDefault(); clearTimeout(linkTimer); takeLink(att(), e.target.value.trim(), e.target); } });
 document.addEventListener("click", e => {
   const r = e.target.closest("[data-rm]"), A = att(); if (!r || A.busy) return;
@@ -1898,6 +1904,11 @@ function drawCreatorForm() {
         <label class="f">Longest clip (seconds)<input data-k="max_len" type="number" value="${c.max_len}"></label>
         <label class="f">Clips per video<input data-k="max_clips" type="number" value="${c.max_clips}"></label>
         <label class="f">Minutes of live stream to keep<input data-k="buffer_min" type="number" value="${c.buffer_min}"></label></div></div>
+    <div class="card"><h2>Campaign</h2><p class="help">Paste the campaign's brief. The @name each platform must tag is read from lines like "IG: @name" and put on the first line of every post; hashtags in the brief are added too. Type a handle below to override.</p>
+      <div class="fields"><label class="f span">Campaign name<input data-k="campaign_name" value="${esc(c.campaign_name || "")}" placeholder="Foltyn GTA Clipper"></label>
+        <label class="f span">Brief (rules from the campaign)<textarea data-k="campaign_brief" rows="6" placeholder="Must TAG on ALL POSTS (first line)&#10;IG: @name&#10;YT: @name&#10;TT: @name">${esc(c.campaign_brief || "")}</textarea></label>
+        ${[["instagram", "Instagram tag"], ["youtube", "YouTube tag"], ["tiktok", "TikTok tag"]].map(([p, l]) =>
+          `<label class="f">${l}<input data-ct="${p}" value="${esc((c.campaign_tags || {})[p] || "")}" placeholder="From the brief"></label>`).join("")}</div></div>
     <div class="card"><h2>Posting</h2><p class="help">${A.length ? "Choose the accounts this creator's clips go to. One account can be shared by several creators." : "No accounts are connected yet. Connect one in Settings, then come back."}</p>
       ${A.length ? `<div class="row" style="margin-bottom:16px">${A.map(a => `<label class="ck"><input type="checkbox" data-acc value="${esc(a.id)}" ${c.accounts.includes(a.id) ? "checked" : ""}>${esc(a.label)} · ${esc(a.name)}</label>`).join("")}</div>` : `<button class="btn" data-act="go" data-v="settings" style="margin-bottom:16px">${ic("cog")}Open Settings</button>`}
       <div class="fields"><label class="sw span"><input type="checkbox" data-k="autopost" ${c.autopost ? "checked" : ""}><span>Post new clips automatically<small>Clips that score high enough go out without you approving them.</small></span></label>
@@ -1911,7 +1922,7 @@ function drawCreatorForm() {
       <button class="btn danger" data-act="delcreator">${ic("trash")}Delete creator</button></div>
     <div class="savebar" id="savebar"><span>${ic("warn")}You have unsaved changes</span><button class="btn ghost" data-act="cdiscard">Discard</button><button class="btn primary" data-act="csave">${ic("check")}Save changes</button></div>`;
 }
-const creatorForm = () => { const d = {}; $$("#cform [data-k]").forEach(i => { if (i.type === "radio") { if (i.checked) d[i.dataset.k] = i.value; } else d[i.dataset.k] = i.type === "checkbox" ? i.checked : i.value; }); d.accounts = $$("#cform [data-acc]:checked").map(i => i.value); return d; };
+const creatorForm = () => { const d = {}; $$("#cform [data-k]").forEach(i => { if (i.type === "radio") { if (i.checked) d[i.dataset.k] = i.value; } else d[i.dataset.k] = i.type === "checkbox" ? i.checked : i.value; }); d.accounts = $$("#cform [data-acc]:checked").map(i => i.value); d.campaign_tags = Object.fromEntries($$("#cform [data-ct]").filter(i => i.value.trim()).map(i => [i.dataset.ct, i.value.trim()])); return d; };
 const dirty = on => $("#savebar")?.classList.toggle("on", on);
 async function saveCreator(quiet) {
   try { await send(`/api/creators/${creatorId()}`, creatorForm(), "PUT"); dirty(false); if (!quiet) toast("Saved", "ok"); await tick(); return true; }
@@ -2331,6 +2342,10 @@ function drawClipDlg(full) {
         </div>
         <div class="two"><label class="f">Caption style<select data-f="style" data-caption-style ${c.captions === false ? "disabled" : ""}>${opts(S.status.styles, c.style)}</select></label>
           <label class="f">Layout<select data-f="layout">${opts(S.status.layouts, c.layout)}</select></label></div>
+        <label class="f">Channel tag <small class="hint">(top-left, like /YourChannel)</small><input data-f="watermark" maxlength="30" value="${esc(c.watermark || "")}"></label>
+        <label class="f">Big text look<select data-f="hook_style"><option value="">Automatic</option>${opts(S.status.hook_styles || {}, c.hook_style)}</select></label>
+        <h3>Edits</h3>
+        <div class="two" style="margin-bottom:8px">${(S.status.fx_keys || []).map(k => `<label class="sw"><input type="checkbox" data-fx="${esc(k)}" ${(c.fx || {})[k] === false ? "" : "checked"}>${esc(FX_LABELS[k] || k)}</label>`).join("")}</div>
         <label class="f">Captions text<textarea data-f="caption_text" rows="3" placeholder="Caption words for this clip">${esc(c.caption_text || (c.fixed_words || []).map(w => w.w).join(" "))}</textarea><small class="hint">Edit caption words directly. Press 'Save and re-make clip' to re-render with your edits.</small></label>
         <div class="two"><label class="f">Start (seconds)<input data-f="start" type="number" step="0.5" value="${c.start}"></label>
           <label class="f">End (seconds)<input data-f="end" type="number" step="0.5" value="${c.end}"></label></div>
@@ -2343,6 +2358,7 @@ function drawClipDlg(full) {
         <div id="dsfx_panel_container"></div>
         <h3>Post text</h3>
         <label class="f">Title<input data-f="title" value="${esc(c.title)}"></label>
+        ${c.title_score != null ? `<p class="help"><b>Title check ${c.title_score}/100</b>${(c.title_issues || []).length ? ": " + esc(c.title_issues.join("; ")) : ": no problems found"}</p>` : ""}
         ${c.title_why ? `<p class="help"><b>My pick:</b> ${esc(c.title_why)}</p>` : ""}
         ${(c.alt_titles || []).length ? `<div class="f"><span>Alternative titles <small class="hint">tap one to use it</small></span><div class="alts">${c.alt_titles.map(t =>
           `<button class="btn sm alttitle" type="button" data-act="usetitle" data-t="${esc(t)}">${esc(t)}</button>`).join("")}</div></div>` : ""}
@@ -2358,7 +2374,10 @@ function drawClipDlg(full) {
           : `<p class="help">No accounts connected yet. Connect one in Settings.</p>`}
         <div class="row" style="margin-top:auto;padding-top:8px;border-top:1px solid var(--line)">
           ${c.status === "done" ? `<a class="btn" href="${m}${esc(c.file)}?download=1">${ic("down")}Download</a>` : ""}
-          <button class="btn" data-act="copy" data-j="${j.id}" data-c="${esc(c.id)}">${ic("copy")}Copy post text</button></div>
+          <button class="btn" data-act="copy" data-j="${j.id}" data-c="${esc(c.id)}">${ic("copy")}Copy post text</button>
+          ${campaignOf(j) ? [["instagram", "IG"], ["youtube", "YT"], ["tiktok", "TT"]].map(([p, l]) =>
+            `<button class="btn sm" data-act="copy" data-p="${p}" data-j="${j.id}" data-c="${esc(c.id)}" title="Post text for ${l}, campaign tag on the first line">${ic("copy")}${l}</button>`).join("") : ""}</div>
+        ${campaignOf(j)?.campaign_brief ? `<details class="f"><summary>Campaign rules: ${esc(campaignOf(j).campaign_name || "this creator's campaign")}</summary><p class="help" style="white-space:pre-wrap">${esc(campaignOf(j).campaign_brief)}</p></details>` : ""}
       </div></div>`;
     renderSfxList();
   } else if (D.sig !== sig) $("#stage").innerHTML = stage;
@@ -2529,6 +2548,11 @@ document.addEventListener("click", async e => {
         }, 400);
       });
       dlg.returnValue = "no"; return dlg.showModal();
+    }
+    if (a === "copy" && d.p) {
+      try { const r = await api(`/api/jobs/${d.j}/clips/${encodeURIComponent(d.c)}/post-text?platform=${d.p}`);
+        await navigator.clipboard.writeText(r.text); } catch (e) { return toast(e.message); }
+      return toast("Post text copied, campaign tag first", "ok");
     }
     if (a === "copy") {
       const c = jobOf(d.j).clips.find(x => x.id === d.c);
@@ -2744,6 +2768,7 @@ document.addEventListener("click", async e => {
         body[i.dataset.f] = i.type === "checkbox" ? i.checked : i.type === "number" ? Number(i.value) : i.value;
       });
       body.sfx = D.sfx || [];
+      body.fx = Object.fromEntries($$("#clipdlg [data-fx]").map(i => [i.dataset.fx, i.checked]));
       await send(`/api/jobs/${D.jid}/clips/${D.cid}/render`, body); toast("Re-making the clip…", "ok"); return tick();
     }
     if (a === "postnow" || a === "postqueue") {

@@ -7,7 +7,7 @@ import time
 
 import numpy as np
 
-from . import ai, config, games, usage, roman
+from . import ai, config, games, package, usage, roman
 
 WINDOW_SEC, OVERLAP_SEC = 15 * 60, 60
 
@@ -70,8 +70,11 @@ Rules:
 - hook: 4 to 8 words, ALL CAPS, shown as big text over the first seconds. It gives the context a stranger needs
   AND makes them wait for the payoff: who, doing what, and the tension. Like "SPEED TRIES TO ROB A COP",
   "HE TRUSTED CHAT ONE LAST TIME", "THIS NPC WOULD NOT LEAVE HIM ALONE". Never a bare label ("CLUTCH", "THE
-  SHOT", "WAIT FOR IT", "CRAZY MOMENT", "OMG") and never a spoiler of the ending. True to what happens.
-- title: the best post title, at most 70 characters: the streamer's name, the game when there is one, and the
+  SHOT", "WAIT FOR IT", "CRAZY MOMENT", "OMG") and never a spoiler of the ending. True to what happens. Use
+  different words from the first spoken line: the viewer hears that anyway.
+- title: the best post title, at most 60 characters before the emoji, the streamer's name in the first 40
+  characters, at most two ALL-CAPS words, and words the hook does not already use (the hook is the thumbnail: it
+  says what the title doesn't): the streamer's name, the game when there is one, and the
   feeling of the moment, ending with one fitting emoji (💀 😂 😭 🔥 😱). Like "IShowSpeed Gets Frustrated During a
   GTA 6 Mission 💀". Never clickbait the clip does not deliver.
 - alt_titles: 4 more titles in the same style, each from a different angle: the reaction, the situation, a quote
@@ -169,14 +172,21 @@ def _tidy(c, s, e, game=None):
         if t and t.lower() not in {x.lower() for x in tags}:
             tags.append(t)
     words = c.get("highlight_words") if isinstance(c.get("highlight_words"), list) else []
+    hook = roman.to_roman(_text(c.get("hook"), 60)).upper()
+    title, alts, swapped = package.best_first(
+        roman.to_roman(_text(c.get("title"), 100)),
+        [t for t in (roman.to_roman(_text(x, 100)) for x in _list(c.get("alt_titles"))) if t][:4], hook)
+    lint = package.check(title, hook)
+    why = (f"Picked by the title check over the first suggestion ({lint['score']}/100)." if swapped
+           else _text(c.get("title_why"), 200))
     return {
         "start": s, "end": e, "score": max(0, min(100, int(_num(c.get("score"))))),
         "category": cat if cat in CATEGORIES else "other",
-        "hook": roman.to_roman(_text(c.get("hook"), 60)).upper(), "title": roman.to_roman(_text(c.get("title"), 100)),
+        "hook": hook, "title": title, "title_score": lint["score"], "title_issues": [m for _, m in lint["issues"]][:4],
         "description": roman.to_roman(_text(c.get("description"), 600, lines=True)),
         "hashtags": [t for t in tags if t][:8],
-        "alt_titles": [t for t in (roman.to_roman(_text(x, 100)) for x in _list(c.get("alt_titles"))) if t][:4],
-        "title_why": _text(c.get("title_why"), 200),
+        "alt_titles": alts,
+        "title_why": why,
         "seo_tags": _seo_tags(c.get("seo_tags")),
         "highlight_words": [roman.to_roman(_text(h, 30)) for h in words][:8],
         "reason": _text(c.get("reason"), 200),

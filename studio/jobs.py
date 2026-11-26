@@ -4,6 +4,7 @@ import json
 import os
 import math
 import queue
+import re
 import shutil
 import threading
 import time
@@ -11,7 +12,7 @@ import traceback
 import uuid
 from pathlib import Path
 
-from . import brain, config, creators, ctx, facecam, games, load, media, quality, render, roman, safe, sfx, transcribe, usage
+from . import brain, config, creators, ctx, edit, facecam, games, load, media, quality, render, roman, safe, sfx, transcribe, usage
 
 class _FairQueue:
     """Whose video is next. Each person has their own line and the lines take turns, so someone who adds ten
@@ -107,8 +108,8 @@ _by_user: dict = {}                       # user -> {job id: job}: listing one p
 _lock = threading.RLock()
 on_clip_ready: list = []   # callbacks (job, clip), run once when a clip first finishes
 
-DEFAULTS = {"max_clips": 6, "min_len": 15, "max_len": 60, "style": "bounce", "layout": "blur", "quality": 720,
-            "range_start": None, "range_end": None, "captions": True, "hinglish": False, "sfx": True,
+DEFAULTS = {"max_clips": 6, "min_len": 15, "max_len": 60, "style": "punch", "layout": "band", "quality": 720,
+            "range_start": None, "range_end": None, "captions": True, "hinglish": False, "sfx": True, "fx": True, "watermark": "",
             "live_minutes": 30, "watch_live": True}
 
 
@@ -120,7 +121,7 @@ def clean_options(options) -> dict:
     """Only known settings, each inside its allowed range. Raises ValueError on nonsense."""
     out = {}
     for k, v in (options if isinstance(options, dict) else {}).items():
-        if k in ("captions", "hinglish", "sfx", "watch_live"):
+        if k in ("captions", "hinglish", "sfx", "fx", "watch_live"):
             if not isinstance(v, bool):
                 raise ValueError(f"{k.capitalize()} must be on or off.")
             out[k] = v
@@ -134,6 +135,8 @@ def clean_options(options) -> dict:
             v = v if v in render.STYLES else DEFAULTS["style"]
         elif k == "layout":
             v = v if v in render.LAYOUTS else DEFAULTS["layout"]
+        elif k == "watermark":                   # the creator's channel tag on every clip
+            v = " ".join(str(v).split())[:30]
         else:                                    # range_start, range_end: seconds into the video
             v = float(v)
             if not math.isfinite(v) or v < 0:
@@ -375,31 +378,29 @@ def request_render(jid, cid, changes: dict):
         raise ValueError("Those times aren't valid.")
     if not 3 <= new["end"] - new["start"] <= 180:
         raise ValueError("A clip can be 3 to 180 seconds long.")
-    for k in ("hook", "title", "description", "style", "layout"):
+    for k in ("hook", "title", "description", "style", "layout", "watermark"):
         if k in changes:
-            new[k] = str(changes[k])[:{"hook": 60, "title": 100, "description": 2000}.get(k, 20)]
+            new[k] = str(changes[k])[:{"hook": 60, "title": 100, "description": 2000, "watermark": 30}.get(k, 20)]
+    if "title" in changes or "hook" in changes:     # the title check follows hand edits too
+        from . import package
+        lint = package.check(new.get("title", ""), new.get("hook", ""))
+        new["title_score"], new["title_issues"] = lint["score"], [m for _, m in lint["issues"]][:4]
     if new.get("style") not in render.STYLES:
         new["style"] = DEFAULTS["style"]
     if new.get("layout") not in render.LAYOUTS:
         new["layout"] = DEFAULTS["layout"]
-    if "caption_text" in changes:
-        new_text = str(changes["caption_text"]).strip()
-        words = new_text.split()
-        if words:
-            start_t = new["start"]
-            end_t = new["end"]
-            dur = max(0.5, end_t - start_t)
-            step = dur / len(words)
-            new_words = []
-            for idx, w in enumerate(words):
-                new_words.append({
-                    "w": roman.to_roman(w) if new.get("hinglish") else w,
-                    "s": round(start_t + idx * step, 2),
-                    "e": round(start_t + (idx + 1) * step, 2),
-                })
-            new["fixed_words"] = new_words
-            new["fixed_for"] = [round(start_t, 2), round(end_t, 2), "custom"]
-            new["caption_text"] = new_text
+    # The editor sends the caption text with every save, edited or not: only a real change is an edit.
+    new_text = " ".join(str(changes.get("caption_text", "")).split())
+    old_words = clip.get("fixed_words") or clip.get("words") or []
+    if new_text and new_text != " ".join(w.get("w", "") for w in old_words).strip():
+        texts = [roman.to_roman(w) if new.get("hinglish") else w for w in new_text.split()]
+        new["fixed_words"] = _place_words(texts, old_words, new["start"], new["end"])
+        new["fixed_for"] = [new["start"], new["end"], "custom"]
+        new["caption_text"] = new_text
+    if "fx" in changes:                         # the edit switches: zooms, ending, outro, music, emoji
+        new["fx"] = edit.fx_options(changes["fx"])
+    if "hook_style" in changes:
+        new["hook_style"] = changes["hook_style"] if changes["hook_style"] in render.HOOK_STYLES else None
     if "sfx" in changes:
         raw_sfx = changes["sfx"]
         if isinstance(raw_sfx, list):
@@ -418,6 +419,22 @@ def request_render(jid, cid, changes: dict):
     clip.update(new, status="queued")
     save(job)
     _q.put(("clip", jid, cid))
+
+
+def _place_words(texts: list, old: list, start: float, end: float) -> list:
+    """Edited caption words, timed where the captions they replace were said, so they stay on the speech. With no
+    old captions in the clip to go by, they are spread evenly over it."""
+    old = [w for w in old if start - 1 <= w.get("s", -9) <= end + 1]
+    if len(old) < 2:
+        step = max(0.5, end - start) / len(texts)
+        return [{"w": t, "s": round(start + i * step, 2), "e": round(start + (i + 1) * step, 2)} for i, t in enumerate(texts)]
+    k = len(old) / len(texts)
+    out = []
+    for i, t in enumerate(texts):
+        a = min(len(old) - 1, int(i * k))
+        b = max(a, min(len(old) - 1, int((i + 1) * k) - 1))
+        out.append({"w": t, "s": old[a]["s"], "e": old[b]["e"]})
+    return out
 
 
 def _source_length(job, src: Path) -> float:
@@ -448,6 +465,9 @@ def render_one(job, clip, words):
             if face:
                 clip["facecam"] = face
         local = dict(clip, start=clip["start"] - off, end=clip["end"] - off, hook=roman.to_roman(clip.get("hook") or ""))
+        local.setdefault("watermark", (job.get("options") or {}).get("watermark", ""))
+        if "fx" not in clip:
+            local["fx"] = None if (job.get("options") or {}).get("fx", True) else False
         near = _caption_words(job, clip, words, off) if clip.get("captions", True) else []
         if (job.get("options") or {}).get("sfx", True) and "sfx" not in clip:
             try:
@@ -458,9 +478,11 @@ def render_one(job, clip, words):
                 pass
         out = render.render_clip(src, d / "clips", clip["id"], local, near, job["width"], job["height"])
         clip.update(out, status="done", version=clip.get("version", 0) + 1, error=None)
-        missed = clip.get("layout") in render.CAM_LAYOUTS and out["layout_used"] != clip["layout"]
-        clip["layout_note"] = ("No facecam was found in this stream, so the game fills the screen instead. "
-                               "Re-render to look again." if missed else None)
+        missed = clip.get("layout") in render.CAM_LAYOUTS and out.get("layout_used", clip["layout"]) != clip["layout"]
+        clip["layout_note"] = (("No facecam was found in this stream, so the zoomed game is shown without it. "
+                                if clip.get("layout") == "band" else
+                                "No facecam was found in this stream, so the game fills the screen instead. ")
+                               + "Re-render to look again." if missed else None)
         post = {k: clip.get(k) for k in ("title", "description", "hashtags", "alt_titles", "title_why", "seo_tags", "hook",
                                           "start", "end", "score", "sfx")}
         (d / "clips" / f"{clip['id']}.json").write_text(json.dumps(post, indent=1), encoding="utf-8")
@@ -482,7 +504,9 @@ def render_one(job, clip, words):
 def _caption_words(job, clip, words, off):
     is_hinglish = bool(clip.get("hinglish") or (job.get("options") or {}).get("hinglish"))
     span = [round(clip["start"], 2), round(clip["end"], 2), "hi" if is_hinglish else "en2"]
-    if clip.get("fixed_for") == span and clip.get("fixed_words") and not any(
+    if (clip.get("fixed_for") or [None] * 3)[2] == "custom" and clip.get("fixed_words"):
+        raw = [w for w in clip["fixed_words"] if w["e"] > clip["start"] and w["s"] < clip["end"]]   # the creator's own words
+    elif clip.get("fixed_for") == span and clip.get("fixed_words") and not any(
             roman.needs_roman(w.get("w", "")) for w in clip["fixed_words"]):
         raw = clip["fixed_words"]          # already tidied for this exact span: no second AI call
     else:
@@ -595,6 +619,13 @@ def _fetch_piece(job, clip, full_audio):
 
 BLOCK = 10 * 60         # long videos are transcribed and clipped one block at a time
 PROGRESSIVE_FROM = 20 * 60
+
+
+def _hindi_video(title: str, audio) -> bool:
+    """Is this video spoken in Hindi? A title in Hindi script says so; otherwise Whisper listens to some of it."""
+    if re.search(r"[\u0900-\u097F]", title):
+        return True
+    return transcribe.detect_lang(audio) in ("hi", "ur")
 
 
 def _covers(words: list, start: float, end: float) -> bool:
@@ -786,6 +817,10 @@ def _run_job(job):
     words, tokens, model = [], 0, None
     done_blocks = 0
     yt = None
+    opts = job.setdefault("options", {})
+    if not opts.get("hinglish") and not resuming and _hindi_video(job.get("title") or "", audio[lo:hi]):
+        opts["hinglish"] = True              # spoken Hindi: Whisper hears it, and the captions come out in Hinglish
+        job["lang_auto"] = "hi"
     if src["type"] == "url" and config.YT_TRANSCRIPT and media.is_youtube(src["url"]):
         try:
             pref = "hi" if (job.get("options") or {}).get("hinglish") else ""
@@ -796,6 +831,9 @@ def _run_job(job):
             yt = None
         job["transcript_from"] = "youtube" if yt else "own"
         job["lang"] = yt[1] if yt else ""          # the language spoken, when YouTube says (decides the captions)
+        if yt and yt[1].lower().startswith(("hi", "ur")) and not opts.get("hinglish"):
+            opts["hinglish"] = True          # YouTube knows the video is in Hindi
+            job["lang_auto"] = "hi"
     if resuming:
         try:
             words = json.loads((d / "words.json").read_text(encoding="utf-8"))
